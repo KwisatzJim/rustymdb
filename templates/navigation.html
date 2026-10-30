@@ -1,0 +1,10 @@
+<header id="page-top" tabindex="-1"><a class="brand" href="/">Rusty<span>MDb</span></a>
+<nav class="tabs" aria-label="Main navigation">
+<a href="/"{% if active_tab == "browse" %} aria-current="page"{% endif %}>Browse</a>
+<a href="/watchlist"{% if active_tab == "watchlist" %} aria-current="page"{% endif %}>Watchlist</a>
+<a href="/maintenance"{% if active_tab == "maintenance" %} aria-current="page"{% endif %}>Maintenance</a>
+<a href="/options"{% if active_tab == "options" %} aria-current="page"{% endif %}>Options</a>
+</nav></header>
+
+<a class="back-to-top" href="#page-top" hidden>↑ Back to top</a>
+<script src="/static/back-to-top.js" defer></script>

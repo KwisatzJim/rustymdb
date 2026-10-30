@@ -1,0 +1,6 @@
+{% include "episode_pagination.html" %}
+{% if series.episodes.is_empty() %}<p>No episodes are listed for this season or page. Try another season or return to the previous page.</p>{% else %}
+<ul class="episode-list">
+{% for episode in series.episodes %}<li><p>{{ episode.position }}</p><a href="/title/{{ episode.id }}">{{ episode.title }}</a>{% if !episode.rating.is_empty() %}<p>IMDb {{ episode.rating }}</p>{% endif %}</li>{% endfor %}
+</ul>{% endif %}
+{% include "episode_pagination.html" %}

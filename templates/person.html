@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ name }} — RustyMDb</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>{% let active_tab = "browse" %}{% include "navigation.html" %}<main>
+<figure class="person-photo"><img src="/person-photo/{{ id }}" alt="Profile photo of {{ name }}" width="185" height="278" decoding="async"><figcaption>Profile photos: TMDB</figcaption></figure>
+<p class="eyebrow">PERSON · {{ id }}</p><h1>{{ name }}</h1>
+<p>{% if imdb_name %}Name from IMDb · {% endif %}<a href="https://www.imdb.com/name/{{ id }}/" rel="noreferrer">View on IMDb</a></p>
+{% if !notice.is_empty() %}<p class="notice">{{ notice }} <a href="/options">Options</a></p>{% endif %}
+{% if let Some(person) = person %}
+<dl class="title-facts">
+{% if !person.department.is_empty() %}<dt>Known for</dt><dd>{{ person.department }}</dd>{% endif %}
+{% if !person.birthday.is_empty() %}<dt>Born</dt><dd>{{ person.birthday }}</dd>{% endif %}
+{% if !person.deathday.is_empty() %}<dt>Died</dt><dd>{{ person.deathday }}</dd>{% endif %}
+{% if !person.birthplace.is_empty() %}<dt>Place of birth</dt><dd>{{ person.birthplace }}</dd>{% endif %}
+</dl>
+<section><h2>Biography</h2>{% if person.biography.is_empty() %}<p>No biography is available from TMDB.</p>{% else %}<p class="person-biography">{{ person.biography }}</p>{% endif %}</section>
+<section><h2>Filmography</h2><p>Movie and TV credits from TMDB, newest dated titles first. Multiple roles for a title are combined. Title links open RustyMDb when TMDB supplies an IMDb ID. Principal credits and episode coverage may differ from IMDb.</p>
+{% if person.filmography.is_empty() %}<p>No filmography is available from TMDB.</p>{% else %}
+<ul class="person-credits">{% for credit in person.filmography %}<li><a href="{{ credit.local_url() }}">{{ credit.title }}</a> <span>{{ credit.media }}{% if !credit.date.is_empty() %} · {{ credit.date }}{% endif %}</span>{% if !credit.roles.is_empty() %}<p>{{ credit.roles }}</p>{% endif %}</li>{% endfor %}</ul>{% endif %}</section>
+<p><a href="{{ person.source_url }}" rel="noreferrer">Person information on TMDB</a></p>{% include "tmdb-attribution.html" %}
+{% endif %}
+</main><footer>RustyMDb · Independent project, not affiliated with IMDb.</footer></body></html>

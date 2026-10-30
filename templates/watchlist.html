@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Watchlist — RustyMDb</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% let active_tab = "watchlist" %}{% include "navigation.html" %}
+  <main>
+    <h1 class="search-heading">Watchlist</h1>
+    <p class="intro">Saved on this RustyMDb server and shared by everyone using it. Watched status and notes are shared too.</p>
+    <form class="watchlist-filter" action="/watchlist" method="get">
+      <label for="watchlist-filter">Show</label>
+      <select id="watchlist-filter" name="filter">
+        <option value="all"{% if filter.as_str() == "all" %} selected{% endif %}>All saved titles</option>
+        <option value="unwatched"{% if filter.as_str() == "unwatched" %} selected{% endif %}>To watch</option>
+        <option value="watched"{% if filter.as_str() == "watched" %} selected{% endif %}>Watched</option>
+      </select><button type="submit">Apply filter</button>
+    </form>
+    {% if total == 0 %}
+    <p>Your watchlist is empty. Open a title and select <strong>Add to watchlist</strong>.</p>
+    <a class="source-link" href="/">Find a title →</a>
+    {% else %}
+    <p>{{ items.len() }} of {{ total }} saved titles shown.</p>
+    {% if items.is_empty() %}<p>No titles match this filter. <a href="/watchlist">Show all saved titles</a>.</p>{% endif %}
+    <ul class="results">
+      {% for item in items %}
+      <li><h2><a href="/title/{{ item.id }}">{{ item.title }}</a></h2><p>{{ item.description }}</p><p class="saved-date">Saved {{ item.added_at }}</p>
+      <p class="watch-status">{% if item.watched %}Watched{% else %}To watch{% endif %}</p>
+      <details class="watchlist-editor"><summary>Edit watched status and notes</summary>
+      <form action="/watchlist/{{ item.id }}/details" method="post">
+        <input type="hidden" name="token" value="{{ form_token }}">
+        <input type="hidden" name="filter" value="{{ filter.as_str() }}">
+        <label class="watched-checkbox"><input type="checkbox" name="watched" value="yes"{% if item.watched %} checked{% endif %}> Mark as watched</label>
+        <label for="notes-{{ item.id }}">Notes (up to 4,000 characters)</label>
+        <textarea id="notes-{{ item.id }}" name="notes" maxlength="4000" rows="4">{{ item.notes }}</textarea>
+        <button type="submit">Save changes</button>
+      </form></details>
+      {% if !item.notes.is_empty() %}<p class="watchlist-note">{{ item.notes }}</p>{% endif %}
+      <form action="/watchlist/{{ item.id }}" method="post">
+        <input type="hidden" name="token" value="{{ form_token }}">
+        <input type="hidden" name="action" value="remove">
+        <input type="hidden" name="destination" value="list">
+        <button class="secondary-button" type="submit" aria-label="Remove {{ item.title }} from watchlist">Remove from watchlist</button>
+      </form></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </main>
+  <footer>Information courtesy of <a href="https://www.imdb.com/" rel="noreferrer">IMDb</a>. Used with permission.<br>RustyMDb · Independent project, not affiliated with IMDb.</footer>
+</body>
+</html>

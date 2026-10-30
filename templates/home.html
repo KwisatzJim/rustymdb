@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>RustyMDb</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% let active_tab = "browse" %}{% include "navigation.html" %}
+  <main>
+    <p class="eyebrow">YOUR MOVIE EXPLORER</p>
+    <h1>A quieter place<br>for the movies you love.</h1>
+    <p class="intro">A lightweight IMDb front end, running on your own server.</p>
+    <form action="/search" method="get" class="search-form">
+      <label for="query">Search IMDb titles or people</label>
+      <div class="search-controls"><input id="query" name="q" placeholder="Try Inception…" maxlength="120" required><button type="submit">Search</button></div>
+      <div class="search-filter"><label for="kind">Search type</label><select id="kind" name="kind">
+        <option value="all">All titles</option><option value="movies">Movies</option>
+        <option value="series">TV series</option><option value="episodes">TV episodes</option>
+      <option value="people">People</option></select></div>
+    </form>
+  </main>
+  <footer>RustyMDb · Independent project, not affiliated with IMDb.</footer>
+</body>
+</html>

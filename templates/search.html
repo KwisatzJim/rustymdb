@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ query }} — RustyMDb</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {% let active_tab = "browse" %}{% include "navigation.html" %}
+  <main>
+    <h1 class="search-heading">{% if kind.as_str() == "people" %}Find people.{% else %}Find your next movie.{% endif %}</h1>
+    <form action="/search" method="get" class="search-form">
+      <label for="query">Search IMDb titles or people</label>
+      <div class="search-controls"><input id="query" name="q" value="{{ query }}" maxlength="120" required><button type="submit">Search</button></div>
+      <div class="search-filter"><label for="kind">Search type</label><select id="kind" name="kind">
+        <option value="all"{% if kind.as_str() == "all" %} selected{% endif %}>All titles</option>
+        <option value="movies"{% if kind.as_str() == "movies" %} selected{% endif %}>Movies</option>
+        <option value="series"{% if kind.as_str() == "series" %} selected{% endif %}>TV series</option>
+        <option value="episodes"{% if kind.as_str() == "episodes" %} selected{% endif %}>TV episodes</option>
+      <option value="people"{% if kind.as_str() == "people" %} selected{% endif %}>People</option></select></div>
+    </form>
+    <p role="status">{{ message }}</p>
+    {% include "pagination.html" %}
+    <ul class="results">
+    {% for result in results %}
+      <li>{% if kind.as_str() == "people" %}<img class="person-thumbnail" src="/person-photo/{{ result.id }}" alt="Profile photo of {{ result.title }}" width="62" height="93" loading="lazy" decoding="async">{% endif %}<h2><a href="/{% if kind.as_str() == "people" %}person{% else %}title{% endif %}/{{ result.id }}">{{ result.title }}</a></h2><p>{{ result.description }}</p><p>{{ result.cast }}</p><a class="result-source" href="/{% if kind.as_str() == "people" %}person{% else %}title{% endif %}/{{ result.id }}" aria-label="View {{ result.title }}">{% if kind.as_str() == "people" %}View person →{% else %}View title →{% endif %}</a></li>
+    {% endfor %}
+    </ul>
+    {% include "pagination.html" %}
+    <p class="intro">{{ source }}</p>
+    {% if kind.as_str() == "people" %}<p>Profile photos: TMDB.</p>{% include "tmdb-attribution.html" %}{% endif %}
+  </main>
+  <footer>Information courtesy of <a href="https://www.imdb.com/" rel="noreferrer">IMDb</a>. Used with permission.<br>RustyMDb · Independent project, not affiliated with IMDb.</footer>
+</body>
+</html>

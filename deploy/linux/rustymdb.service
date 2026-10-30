@@ -1,0 +1,27 @@
+[Unit]
+Description=RustyMDb self-hosted IMDb front end
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/rustymdb
+ConditionFileIsExecutable=/srv/rustymdb/bin/rustymdb
+
+[Service]
+Type=simple
+User=rustymdb
+Group=rustymdb
+WorkingDirectory=/srv/rustymdb
+EnvironmentFile=/srv/rustymdb/rustymdb.env
+ExecStart=/srv/rustymdb/bin/rustymdb
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/rustymdb/data
+
+[Install]
+WantedBy=multi-user.target

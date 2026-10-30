@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{% if let Some(collection) = collection %}{{ collection.name }}{% else %}Movie collection{% endif %} — RustyMDb</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>{% let active_tab = "browse" %}{% include "navigation.html" %}<main>
+{% if let Some(collection) = collection %}<h1 class="title-heading">{{ collection.name }}</h1>
+{% if !collection.overview.is_empty() %}<p class="intro">{{ collection.overview }}</p>{% endif %}
+<p>{{ collection.movies.len() }} films listed by TMDB, in release-date order. Undated entries appear last. Select a film to open its local page when an IMDb match is available.</p>
+{% if collection.movies.is_empty() %}<p>No films are listed in this collection.</p>{% else %}<ul class="recommendation-list">{% for movie in collection.movies %}<li><a href="{{ movie.local_url() }}">{{ movie.title }}</a>{% if !movie.year.is_empty() %}<p>{{ movie.year }}</p>{% endif %}</li>{% endfor %}</ul>{% endif %}
+{% else %}<h1>Movie collection unavailable</h1><p class="notice" role="status">{{ notice }}</p><p><a href="/collection/{{ id }}">Try again</a> · <a href="/options">Options</a></p>{% endif %}
+<p><a href="https://www.themoviedb.org/collection/{{ id }}" rel="noreferrer">Collection source on TMDB ↗</a></p>{% include "tmdb-attribution.html" %}
+</main><footer>RustyMDb · Independent project, not affiliated with IMDb.</footer></body></html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Options — RustyMDb</title><link rel="stylesheet" href="/static/style.css"></head>
+<body>{% let active_tab = "options" %}{% include "navigation.html" %}
+<main><h1 class="search-heading">Options</h1>
+<section aria-labelledby="tmdb-heading"><h2 id="tmdb-heading">TMDB supplemental information</h2>
+<p>IMDb remains the primary source. TMDB can supply missing storylines, taglines, release dates, languages, countries, production companies, and budget/revenue, plus runtime or genres when IMDb has no value.</p>
+<p>TMDB is inactive until you provide and verify credentials. Titles are matched by their IMDb ID; IMDb ratings, credits, and episode ordering are preserved.</p>
+{% if !message.is_empty() %}<p class="notice" role="status">{{ message }}</p>{% endif %}
+{% if !error.is_empty() %}<p class="options-error" role="alert">{{ error }}</p>{% endif %}
+{% if method.is_empty() %}<p><strong>Status: Not configured — no TMDB requests are made.</strong></p>{% else %}<p><strong>Status: Configured using {{ method }}.</strong></p>{% endif %}
+<h3>Set up your TMDB account</h3>
+<ol class="setup-steps">
+<li><a href="https://www.themoviedb.org/signup" rel="noreferrer">Create a free TMDB account</a>, verify your email, and sign in.</li>
+<li>On a desktop browser, open <a href="https://www.themoviedb.org/settings/api" rel="noreferrer">Settings → API</a> and request API access. Choose the appropriate developer/non-commercial use option for this personal server.</li>
+<li>Review TMDB's terms and complete its application form. Describe the application as a private, self-hosted movie information browser. Use your actual application/contact information; do not invent a public website.</li>
+<li>Once access is approved, return to API settings. Copy either the <strong>API Read Access Token</strong> (recommended) or the <strong>API Key (v3 auth)</strong>.</li>
+<li>Paste just one credential below, then select <strong>Save and verify</strong>. These are API credentials, not your TMDB account password.</li>
+</ol>
+<form action="/options" method="post" class="options-form">
+<input type="hidden" name="token" value="{{ form_token }}">
+<label for="read-token">API Read Access Token (recommended)</label><input id="read-token" name="read_token" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Paste a new token to configure or replace it">
+<label for="api-key">Or API key (v3 auth)</label><input id="api-key" name="api_key" type="password" autocomplete="new-password" spellcheck="false" maxlength="32" placeholder="32-character API key">
+<p class="maintenance-help">Leave both fields blank to keep and test the existing credential. Saved values are never returned to the browser. Use a trusted Tailscale/HTTPS connection when entering credentials.</p>
+<button type="submit" name="action" value="save">Save and verify</button>
+</form>
+{% if !method.is_empty() %}<div class="options-actions"><form action="/options" method="post"><input type="hidden" name="token" value="{{ form_token }}"><button class="secondary-button" type="submit" name="action" value="test">Test connection</button></form><form action="/options" method="post"><input type="hidden" name="token" value="{{ form_token }}"><button class="secondary-button" type="submit" name="action" value="remove">Remove credentials and disable TMDB</button></form></div>{% endif %}
+<p class="maintenance-help">Credentials are stored in an owner-readable server file, separately from SQLite. Database-only backups exclude them; configure TMDB again after restoring to another server. These are shared server options for everyone who can reach this instance.</p>
+</section>
+<section id="schedules" aria-labelledby="schedules-heading"><h2 id="schedules-heading">Automatic maintenance</h2>
+<p>Schedules run while this server is running, using the same job runner as the Maintenance tab. Only one job runs at a time. Overdue jobs wait for the runner to become available; missed intervals are combined into one run.</p>
+<form action="/options/schedules" method="post" class="options-form">
+<input type="hidden" name="token" value="{{ form_token }}">
+{% for schedule in schedules %}
+<label for="schedule-{{ schedule.kind }}">{{ schedule.label }}</label>
+<select id="schedule-{{ schedule.kind }}" name="{{ schedule.kind }}_days">
+<option value="0"{% if schedule.days == 0 %} selected{% endif %}>Disabled</option>
+<option value="1"{% if schedule.days == 1 %} selected{% endif %}>Every day</option>
+<option value="7"{% if schedule.days == 7 %} selected{% endif %}>Every 7 days</option>
+<option value="30"{% if schedule.days == 30 %} selected{% endif %}>Every 30 days</option>
+</select>
+<p class="maintenance-help">{% if schedule.days == 0 %}Schedule disabled.{% else %}Next run: {{ schedule.next_run }}.{% endif %} Last scheduled job: {{ schedule.last_result }}.</p>
+{% endfor %}
+<button type="submit">Save schedules</button></form>
+<p class="maintenance-help">Newly enabled or changed schedules first run after the selected interval. Saving an unchanged interval preserves its next run. Disabling a schedule does not cancel a job already running. Failed jobs wait until the next interval; see Maintenance for output.</p>
+<p class="maintenance-help">Manual backups remain until you remove them. Scheduled backups follow the retention setting below. Full dataset refreshes can take a long time and download several gigabytes. Settings and next-run times are included in database backups; an enabled overdue schedule runs once after a restore.</p>
+<p><a href="/maintenance">View maintenance progress and latest output →</a></p></section>
+<section id="retention" aria-labelledby="retention-heading"><h2 id="retention-heading">Backup retention</h2>
+<p>Manage only scheduled backups created after this feature was installed. Manual backups, pre-upgrade backups, older untracked backups, and changed or unrecognized files are preserved.</p>
+<form class="options-form" action="/options/retention" method="post"><input type="hidden" name="token" value="{{ form_token }}">
+<label for="backup-keep">Scheduled backups to keep</label><select id="backup-keep" name="keep">
+<option value="0"{% if retention.keep == 0 %} selected{% endif %}>Keep all — no automatic deletion</option>
+<option value="3"{% if retention.keep == 3 %} selected{% endif %}>Keep latest 3</option>
+<option value="5"{% if retention.keep == 5 %} selected{% endif %}>Keep latest 5</option>
+<option value="10"{% if retention.keep == 10 %} selected{% endif %}>Keep latest 10</option>
+<option value="20"{% if retention.keep == 20 %} selected{% endif %}>Keep latest 20</option>
+</select><p>{{ retention.managed }} tracked scheduled backup(s).</p>
+<p class="maintenance-help">Choosing a limit authorizes permanent deletion of older tracked scheduled backups. Saving does not delete anything immediately. Cleanup runs only after a new scheduled backup passes verification and keeps the newest selected number of unchanged backup files.</p>
+<button type="submit">Save backup retention</button></form></section>
+<section aria-labelledby="credits-heading"><h2 id="credits-heading">About and credits</h2><p>Movie and episode data: IMDb. Optional supplemental information: TMDB.</p>{% include "tmdb-attribution.html" %}<p><a href="https://developer.themoviedb.org/docs/getting-started" rel="noreferrer">TMDB API setup documentation</a></p></section>
+</main><footer>RustyMDb · Independent project, not affiliated with IMDb.</footer></body></html>

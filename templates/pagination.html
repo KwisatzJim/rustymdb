@@ -1,0 +1,7 @@
+{% if !previous_url.is_empty() || !next_url.is_empty() %}
+<nav class="pagination" aria-label="Search result pages">
+  {% if !previous_url.is_empty() %}<a href="{{ previous_url }}" rel="prev">← Previous</a>{% else %}<span class="page-disabled" aria-disabled="true">← Previous</span>{% endif %}
+  <span>Page {{ number }}</span>
+  {% if !next_url.is_empty() %}<a href="{{ next_url }}" rel="next">Next →</a>{% else %}<span class="page-disabled" aria-disabled="true">Next →</span>{% endif %}
+</nav>
+{% endif %}

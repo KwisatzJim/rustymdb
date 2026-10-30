@@ -1,0 +1,7 @@
+{% if !series.previous_url.is_empty() || !series.next_url.is_empty() %}
+<nav class="pagination" aria-label="Episode pages">
+  {% if !series.previous_url.is_empty() %}<a href="{{ series.previous_url }}" rel="prev">← Previous</a>{% else %}<span class="page-disabled" aria-disabled="true">← Previous</span>{% endif %}
+  <span>Page {{ series.number }}</span>
+  {% if !series.next_url.is_empty() %}<a href="{{ series.next_url }}" rel="next">Next →</a>{% else %}<span class="page-disabled" aria-disabled="true">Next →</span>{% endif %}
+</nav>
+{% endif %}

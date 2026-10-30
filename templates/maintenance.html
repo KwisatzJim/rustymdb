@@ -1,0 +1,39 @@
+<section id="maintenance" class="maintenance" data-running="{{ maintenance.running }}" aria-labelledby="maintenance-heading">
+  <h2 id="maintenance-heading">Server maintenance</h2>
+  <p>Refresh IMDb data or create a verified database backup. One job runs at a time; you can keep browsing.</p>
+  <div class="maintenance-controls">
+    <form action="/maintenance" method="post">
+      <input type="hidden" name="token" value="{{ maintenance.form_token }}">
+      <input type="hidden" name="action" value="refresh">
+      <label for="dataset">Dataset</label>
+      <select id="dataset" name="dataset"{% if maintenance.running %} disabled{% endif %}>
+        <option value="all">All datasets</option>
+        <option value="ratings">Ratings</option>
+        <option value="titles">Titles and search index</option>
+        <option value="credits">Directors, writers, and people</option>
+        <option value="cast">Principal cast</option>
+        <option value="episodes">Episode relationships</option>
+      <option value="people">Rebuild People search index (no download)</option></select>
+      <button type="submit"{% if maintenance.running %} disabled{% endif %}>Refresh datasets</button>
+    </form>
+    <form action="/maintenance" method="post">
+      <input type="hidden" name="token" value="{{ maintenance.form_token }}">
+      <input type="hidden" name="action" value="backup">
+      <button class="secondary-button" type="submit"{% if maintenance.running %} disabled{% endif %}>Create backup</button>
+    </form>
+  </div>
+  <p class="maintenance-help">Refreshing all datasets downloads roughly 1.5 GB and can take several minutes. Your watchlist is preserved.</p>
+  <p class="maintenance-help">Backups stay on this server in <code>{{ maintenance.backup_directory }}</code>. Each is a full database copy and uses roughly the database's size in free space.</p>
+  <div class="maintenance-status" role="status" aria-live="polite">
+    {% if let Some(job) = maintenance.latest %}
+    <h3>{{ job.label }} — {{ job.state_label() }}</h3>
+    <p>{{ job.detail }}</p>
+    <p class="maintenance-help">Started {{ job.started_at }}{% if !job.finished_at.is_empty() %}<br>Finished {{ job.finished_at }}{% endif %}</p>
+    {% else %}<p>No maintenance jobs have been run from this page yet.</p>{% endif %}
+    <p class="maintenance-connection" hidden></p>
+  </div>
+  {% if !maintenance.output.is_empty() %}
+  <details{% if maintenance.running %} open{% endif %}><summary>Command output</summary><pre class="maintenance-output">{{ maintenance.output }}</pre></details>
+  {% endif %}
+  <noscript><p><a href="/maintenance#maintenance">Reload the homepage to check job status</a>.</p></noscript>
+</section>

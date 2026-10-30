@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% if summary.title.is_empty() %}Title unavailable{% else %}{{ summary.title }}{% endif %} — RustyMDb</title>
+  <link rel="stylesheet" href="/static/style.css">
+<script src="/static/seasons.js" defer></script>
+</head>
+<body>
+  {% let active_tab = "browse" %}{% include "navigation.html" %}
+  <main>
+    {% if !summary.title.is_empty() %}<img class="title-poster" src="/poster/{{ id }}" alt="Poster for {{ summary.title }}" width="240" height="360" loading="lazy" decoding="async">{% endif %}
+    <p class="eyebrow">IMDB TITLE · {{ id }}</p>
+    <h1 class="title-heading">{% if summary.title.is_empty() %}Title unavailable{% else %}{{ summary.title }}{% endif %}</h1>
+    <p class="intro">{{ summary.description }}</p>
+    {% if let Some(saved) = saved %}
+    {% if !summary.title.is_empty() || saved %}
+    <form action="/watchlist/{{ id }}" method="post" class="watchlist-action">
+      <input type="hidden" name="token" value="{{ form_token }}">
+      <input type="hidden" name="season" value="{{ return_season }}">
+      <input type="hidden" name="page" value="{{ return_page }}">
+      {% if saved %}
+      <p role="status">Saved to your watchlist.</p>
+      <button class="secondary-button" type="submit" name="action" value="remove">Remove from watchlist</button>
+      {% else %}<button type="submit" name="action" value="add">Add to watchlist</button>{% endif %}
+    </form>
+    {% endif %}
+    {% else %}<p role="status">Watchlist temporarily unavailable.</p>{% endif %}
+    {% if let Some(parent) = episode_navigation.parent %}
+    <p class="episode-parent"><a href="{{ parent.url }}">← {{ parent.title }}</a><br>{{ parent.position }}</p>
+    {% endif %}
+    {% if !notice.is_empty() %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
+    {% if !details.plot.is_empty() %}<section><h2>Storyline</h2><p>{{ details.plot }}</p></section>{% endif %}
+    <dl class="title-facts">
+      {% if let Some(basics) = dataset_title %}
+      <dt>Type</dt><dd>{{ basics.type_label() }}</dd>
+      {% if basics.original_title != basics.primary_title %}<dt>Original title</dt><dd>{{ basics.original_title }}</dd>{% endif %}
+      {% if let Some(minutes) = basics.runtime_minutes %}<dt>Runtime</dt><dd>{{ minutes }} minutes</dd>{% endif %}
+      {% if !basics.genres_label().is_empty() %}<dt>Genres</dt><dd>{{ basics.genres_label() }}</dd>{% endif %}
+      <dt>Title source</dt><dd>IMDb dataset · Imported {{ basics.imported_at }}</dd>
+      {% endif %}
+      {% if let Some(rating) = dataset_rating %}
+      <dt>IMDb rating</dt><dd>{{ rating.score }} / 10 · {{ rating.votes }} votes</dd>
+      <dt>Ratings source</dt><dd>IMDb dataset · Imported {{ rating.imported_at }}</dd>
+      {% else if !details.rating.is_empty() %}<dt>IMDb rating</dt><dd>{{ details.rating }} / 10</dd>{% endif %}
+      {% if !details.released.is_empty() %}<dt>Release date</dt><dd>{{ details.released }}</dd>{% endif %}
+      {% if dataset_title.is_none() && !details.genres.is_empty() %}<dt>Genres</dt><dd>{{ details.genres }}</dd>{% endif %}
+      {% if let Some(credits) = dataset_credits %}
+      {% if !credits.directors.is_empty() %}<dt>Directors</dt><dd>{% for person in credits.director_links %}<a href="/person/{{ person.id }}">{{ person.name }}</a>{% if !loop.last %}, {% endif %}{% endfor %}</dd>{% endif %}
+      {% if !credits.writers.is_empty() %}<dt>Writers</dt><dd>{% for person in credits.writer_links %}<a href="/person/{{ person.id }}">{{ person.name }}</a>{% if !loop.last %}, {% endif %}{% endfor %}</dd>{% endif %}
+      <dt>Credits source</dt><dd>IMDb crew and people datasets · Imported {{ credits.imported_at }}</dd>
+      {% else if !details.directors.is_empty() %}<dt>Director</dt><dd>{{ details.directors }}</dd>{% endif %}
+      {% if dataset_cast.is_none() %}
+      {% if !details.actors.is_empty() %}<dt>Cast</dt><dd>{{ details.actors }}</dd>{% else if !summary.cast.is_empty() %}<dt>Featured cast</dt><dd>{{ summary.cast }}</dd>{% endif %}
+      {% endif %}
+    </dl>
+    {% if let Some(extra) = supplemental %}
+    {% if extra.has_information() %}
+    <section class="tmdb-information" aria-labelledby="tmdb-info-heading">
+      <h2 id="tmdb-info-heading">Additional information from TMDB</h2>
+      {% if !extra.overview.is_empty() %}<h3>Storyline</h3><p>{{ extra.overview }}</p>{% endif %}
+      {% if !extra.tagline.is_empty() %}<p><em>{{ extra.tagline }}</em></p>{% endif %}
+      <dl class="title-facts">
+      {% if !extra.release_date.is_empty() %}<dt>Release / first air date</dt><dd>{{ extra.release_date }}</dd>{% endif %}
+      {% if !extra.runtime.is_empty() %}<dt>Runtime</dt><dd>{{ extra.runtime }}</dd>{% endif %}
+      {% if !extra.genres.is_empty() %}<dt>Genres</dt><dd>{{ extra.genres }}</dd>{% endif %}
+      {% if !extra.countries.is_empty() %}<dt>Countries</dt><dd>{{ extra.countries }}</dd>{% endif %}
+      {% if !extra.languages.is_empty() %}<dt>Languages</dt><dd>{{ extra.languages }}</dd>{% endif %}
+      {% if !extra.companies.is_empty() %}<dt>Production companies</dt><dd>{{ extra.companies }}</dd>{% endif %}
+      {% if !extra.status.is_empty() %}<dt>Status</dt><dd>{{ extra.status }}</dd>{% endif %}
+      {% if !extra.budget.is_empty() %}<dt>Budget</dt><dd>{{ extra.budget }}</dd>{% endif %}
+      {% if !extra.revenue.is_empty() %}<dt>Revenue</dt><dd>{{ extra.revenue }}</dd>{% endif %}
+      </dl><a class="source-link" href="{{ extra.source_url }}" rel="noreferrer">View this title on TMDB ↗</a>
+      {% include "tmdb-attribution.html" %}
+    </section>
+    {% endif %}
+    {% endif %}
+    {% if let Some(series) = episode_navigation.series %}
+    <section id="episodes" aria-labelledby="episodes-heading">
+      <h2 id="episodes-heading">Episodes</h2>
+      {% for season in series.seasons %}{% if season.value != "all" %}
+      <details class="season-section" data-title-id="{{ id }}" data-season="{{ season.value }}"{% if season.selected %} open{% endif %}>
+        <summary>{{ season.label }}</summary>
+        <div class="season-episodes" data-loaded="{% if season.selected %}true{% else %}false{% endif %}" tabindex="-1">
+        {% if season.selected %}{% include "episode_list.html" %}{% else %}
+        <p><a href="/title/{{ id }}?season={{ season.value }}&amp;page=1#episodes">View {{ season.label }} episodes →</a></p>
+        {% endif %}
+        </div>
+      </details>
+      {% endif %}{% endfor %}
+      <p class="cast-source">IMDb episode dataset · Imported {{ series.imported_at }}.</p>
+    </section>
+    {% endif %}
+    {% if let Some(cast) = dataset_cast %}
+    <section aria-labelledby="cast-heading">
+      <h2 id="cast-heading">Principal cast</h2>
+      {% if cast.members.is_empty() %}<p>No principal cast is listed for this title in the imported IMDb dataset.</p>{% else %}
+      <ul class="cast-list">
+        {% for member in cast.members %}
+        <li><strong><a href="/person/{{ member.id }}">{{ member.name }}</a></strong>{% if !member.characters.is_empty() %}<span>as {{ member.characters }}</span>{% else if member.is_self %}<span>Self</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <p class="cast-source">IMDb principal credits dataset · Imported {{ cast.imported_at }}. This is a selection of principal performers, not a complete cast list.</p>
+    </section>
+    {% endif %}
+    {% if let Some(extra) = supplemental %}{% if !extra.videos.is_empty() %}
+    <section aria-labelledby="trailers-heading"><h2 id="trailers-heading">Trailers and teasers</h2>
+    <p>Links open on the video provider's website. Nothing is loaded from YouTube or Vimeo until you select a link.</p>
+    <ul class="trailer-list">{% for video in extra.videos %}<li><a href="{{ video.url }}" target="_blank" rel="noopener noreferrer">{{ video.name }} ↗</a><p>{{ video.kind }} · {{ video.site }}{% if video.official %} · Official{% endif %}</p></li>{% endfor %}</ul>
+    <p class="cast-source">Video listings and official labels supplied by TMDB.</p>{% include "tmdb-attribution.html" %}
+    </section>{% endif %}{% endif %}
+    {% if let Some(extra) = supplemental %}
+    {% if !extra.cast.is_empty() || !extra.crew.is_empty() %}
+    <section class="expanded-credits" aria-labelledby="expanded-credits-heading"><h2 id="expanded-credits-heading">Expanded cast and crew (TMDB)</h2>
+    <p>Additional credits from TMDB. Coverage may differ from IMDb. Series credits are not an episode-by-episode list.</p>
+    {% if !extra.cast.is_empty() %}<details><summary>Cast ({{ extra.cast.len() }})</summary><ul class="cast-list">
+    {% for member in extra.cast %}<li><strong><a href="/tmdb-person/{{ member.id }}">{{ member.name }}</a></strong>{% if !member.detail.is_empty() %}<span>{{ member.detail }}</span>{% endif %}</li>{% endfor %}
+    </ul></details>{% endif %}
+    {% if !extra.crew.is_empty() %}<details><summary>Crew ({{ extra.crew.len() }})</summary><ul class="cast-list">
+    {% for member in extra.crew %}<li><strong><a href="/tmdb-person/{{ member.id }}">{{ member.name }}</a></strong>{% if !member.detail.is_empty() %}<span>{{ member.detail }}</span>{% endif %}</li>{% endfor %}
+    </ul></details>{% endif %}
+    <p><a href="{{ extra.source_url }}" rel="noreferrer">Credits source on TMDB</a></p>{% include "tmdb-attribution.html" %}
+    </section>
+    {% endif %}{% endif %}
+    {% if let Some(extra) = supplemental %}{% if !extra.collections.is_empty() %}
+    <section aria-labelledby="collection-heading"><h2 id="collection-heading">Movie collection</h2>
+    {% for collection in extra.collections %}<p><a href="/collection/{{ collection.id }}">{{ collection.name }} →</a></p>{% endfor %}
+    <p class="cast-source">Collection membership supplied by TMDB.</p></section>{% endif %}{% endif %}
+    {% if let Some(extra) = supplemental %}{% if !extra.recommendations.is_empty() %}
+    <section class="recommendations" aria-labelledby="recommendations-heading"><h2 id="recommendations-heading">You may also like</h2>
+    <p>Recommendations supplied by TMDB. Select a title to open its RustyMDb page when an IMDb match is available.</p>
+    <ul class="recommendation-list">{% for related in extra.recommendations %}<li><a href="{{ related.local_url() }}">{{ related.title }}</a><p>{{ related.type_label() }}{% if !related.year.is_empty() %} · {{ related.year }}{% endif %}</p></li>{% endfor %}</ul>
+    {% include "tmdb-attribution.html" %}</section>{% endif %}{% endif %}
+    <a class="source-link" href="https://www.imdb.com/title/{{ id }}/" rel="noreferrer">View source on IMDb ↗</a>
+  </main>
+  <footer>Information courtesy of <a href="https://www.imdb.com/" rel="noreferrer">IMDb</a>. Used with permission.<br>RustyMDb · Independent project, not affiliated with IMDb.</footer>
+</body>
+</html>
