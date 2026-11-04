@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound and expire the artwork cache, with a configurable payload limit.
+- Keep missing TMDB items from pausing unrelated provider lookups.
+- Identify gallery images by stable filenames instead of list positions.
+
 - Where to watch with a shared country setting and JustWatch attribution.
 - Collapsible plot keywords, artwork galleries, and country-grouped alternative titles from TMDB.
 - Validated gallery image proxy with cached thumbnails and larger-image links.

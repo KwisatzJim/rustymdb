@@ -30,6 +30,7 @@ struct AppState {
     client: reqwest::Client,
     poster_client: reqwest::Client,
     photo_limit: std::sync::Arc<tokio::sync::Semaphore>,
+    image_cache_bytes: u64,
     database: PathBuf,
     form_token: String,
     maintenance: std::sync::Arc<maintenance::Manager>,
@@ -187,7 +188,12 @@ async fn collection_page(
         Ok(None) => (
             StatusCode::OK,
             None,
-            "Configure TMDB in Options to browse this collection.".into(),
+            if state.tmdb.method().is_empty() {
+                "Configure TMDB in Options to browse this collection."
+            } else {
+                "This collection is no longer available on TMDB."
+            }
+            .into(),
         ),
         Err(error) => (StatusCode::SERVICE_UNAVAILABLE, None, error),
     };
@@ -208,13 +214,13 @@ struct GalleryQuery {
 }
 async fn gallery_image(
     State(state): State<AppState>,
-    Path((id, kind, index)): Path<(String, String, usize)>,
+    Path((id, kind, filename)): Path<(String, String, String)>,
     Query(query): Query<GalleryQuery>,
 ) -> Result<([(axum::http::header::HeaderName, String); 3], Vec<u8>), StatusCode> {
     use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
     if !imdb::valid_title_id(&id)
         || !matches!(kind.as_str(), "posters" | "backdrops" | "logos")
-        || index >= 12
+        || !posters::valid_tmdb_path(&format!("/{filename}"))
     {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -236,7 +242,12 @@ async fn gallery_image(
         .gallery
         .iter()
         .find(|group| group.kind == kind)
-        .and_then(|group| group.images.get(index))
+        .and_then(|group| {
+            group
+                .images
+                .iter()
+                .find(|image| image.filename() == filename)
+        })
         .ok_or(StatusCode::NOT_FOUND)?;
     if !posters::valid_tmdb_path(&image.path) {
         return Err(StatusCode::NOT_FOUND);
@@ -262,7 +273,7 @@ async fn gallery_image(
                     .map_err(|_| StatusCode::BAD_GATEWAY)?;
             let path = state.database.clone();
             tokio::task::spawn_blocking(move || {
-                let _ = posters::store(&path, &key, &photo);
+                let _ = posters::store(&path, &key, &photo, state.image_cache_bytes);
                 photo
             })
             .await
@@ -320,7 +331,7 @@ async fn person_photo(
             };
             let path = state.database.clone();
             tokio::task::spawn_blocking(move || {
-                let _ = posters::store(&path, &key, &photo);
+                let _ = posters::store(&path, &key, &photo, state.image_cache_bytes);
                 photo
             })
             .await
@@ -375,7 +386,7 @@ async fn poster(
             let path = state.database.clone();
             // Return the image even when a dataset import temporarily blocks cache writes.
             match tokio::task::spawn_blocking(move || {
-                if let Err(error) = posters::store(&path, &id, &poster) {
+                if let Err(error) = posters::store(&path, &id, &poster, state.image_cache_bytes) {
                     eprintln!("Poster cache write failed: {error}");
                 }
                 poster
@@ -1380,6 +1391,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Ok(());
     }
 
+    let image_cache_bytes =
+        posters::cache_limit(env::var("RUSTYMDB_IMAGE_CACHE_MB").ok().as_deref())?;
+    let cache_database = data_dir.join("rustymdb.sqlite3");
     let address = env::var("RUSTYMDB_BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let mut token_bytes = [0u8; 32];
     getrandom::fill(&mut token_bytes)
@@ -1413,7 +1427,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/person/{id}", get(person_page))
         .route("/tmdb-person/{id}", get(tmdb_person_link))
         .route("/person-photo/{id}", get(person_photo))
-        .route("/gallery-image/{id}/{kind}/{index}", get(gallery_image))
+        .route("/gallery-image/{id}/{kind}/{filename}", get(gallery_image))
         .route("/poster/{id}", get(poster))
         .route("/watchlist", get(watchlist_page))
         .route("/watchlist/{id}", post(watchlist_update))
@@ -1429,6 +1443,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .timeout(std::time::Duration::from_secs(15))
                 .build()?,
             photo_limit: std::sync::Arc::new(tokio::sync::Semaphore::new(3)),
+            image_cache_bytes,
             database: data_dir.join("rustymdb.sqlite3"),
             form_token,
             maintenance,
@@ -1436,6 +1451,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tokio::spawn(scheduler.run_scheduler());
+    // The first tick cleans existing caches; later ticks remove expired artwork even when idle.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let path = cache_database.clone();
+            match tokio::task::spawn_blocking(move || posters::prune(&path, image_cache_bytes))
+                .await
+            {
+                Ok(Ok(())) => {}
+                error => eprintln!("Artwork cache cleanup postponed: {error:?}"),
+            }
+        }
+    });
     println!("RustyMDb listening on http://{}", listener.local_addr()?);
     println!("Database: {}", data_dir.join("rustymdb.sqlite3").display());
     axum::serve(listener, app)

@@ -49,18 +49,72 @@ fn cached_connection(connection: &Connection, id: &str) -> rusqlite::Result<Opti
         .optional()
 }
 
-pub fn store(path: &Path, id: &str, poster: &Poster) -> rusqlite::Result<()> {
+pub const DEFAULT_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+pub fn cache_limit(value: Option<&str>) -> Result<u64, Error> {
+    match value {
+        None => Ok(DEFAULT_CACHE_BYTES),
+        Some(value) => {
+            let mib: u64 = value
+                .parse()
+                .map_err(|_| "RUSTYMDB_IMAGE_CACHE_MB must be a positive whole number")?;
+            if !(1..=16384).contains(&mib) {
+                return Err("RUSTYMDB_IMAGE_CACHE_MB must be between 1 and 16384".into());
+            }
+            Ok(mib * 1024 * 1024)
+        }
+    }
+}
+fn prune_connection(connection: &Connection, limit: u64) -> rusqlite::Result<()> {
+    connection.execute("DELETE FROM poster_cache WHERE expires_at<=unixepoch()", [])?;
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut total: i64 = connection.query_row(
+        "SELECT COALESCE(SUM(length(image)),0) FROM poster_cache",
+        [],
+        |r| r.get(0),
+    )?;
+    if total <= limit {
+        return Ok(());
+    }
+    let rows = connection
+        .prepare("SELECT title_id,length(image) FROM poster_cache ORDER BY expires_at,title_id")?
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, bytes) in rows {
+        if total <= limit {
+            break;
+        }
+        connection.execute("DELETE FROM poster_cache WHERE title_id=?1", [id])?;
+        total = total.saturating_sub(bytes);
+    }
+    Ok(())
+}
+pub fn prune(path: &Path, limit: u64) -> rusqlite::Result<()> {
+    let connection = Connection::open(path)?;
+    connection.busy_timeout(Duration::from_millis(100))?;
+    let transaction = connection.unchecked_transaction()?;
+    prune_connection(&transaction, limit)?;
+    transaction.commit()
+}
+pub fn store(path: &Path, id: &str, poster: &Poster, limit: u64) -> rusqlite::Result<()> {
     let connection = Connection::open(path)?;
     // Image caching is optional; don't hold an image response up during a dataset import.
     connection.busy_timeout(Duration::from_millis(100))?;
-    store_connection(&connection, id, poster)
+    store_connection(&connection, id, poster, limit)
 }
-
-fn store_connection(connection: &Connection, id: &str, poster: &Poster) -> rusqlite::Result<()> {
-    connection.execute("INSERT INTO poster_cache VALUES (?1,?2,?3,unixepoch()+?4)
-        ON CONFLICT(title_id) DO UPDATE SET image=excluded.image,content_type=excluded.content_type,expires_at=excluded.expires_at",
-        rusqlite::params![id,poster.bytes,poster.content_type,poster.ttl])?;
-    Ok(())
+fn store_connection(
+    connection: &Connection,
+    id: &str,
+    poster: &Poster,
+    limit: u64,
+) -> rusqlite::Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    if poster.bytes.len() as u64 <= limit {
+        transaction.execute("INSERT INTO poster_cache VALUES (?1,?2,?3,unixepoch()+?4)
+            ON CONFLICT(title_id) DO UPDATE SET image=excluded.image,content_type=excluded.content_type,expires_at=excluded.expires_at",
+            rusqlite::params![id,poster.bytes,poster.content_type,poster.ttl])?;
+    }
+    prune_connection(&transaction, limit)?;
+    transaction.commit()
 }
 
 #[derive(Deserialize)]
@@ -235,6 +289,95 @@ pub async fn fetch_profile(client: &reqwest::Client, path: &str) -> Result<Poste
 mod tests {
     use super::*;
     #[test]
+    fn cache_prunes_expired_and_earliest_expiring_artwork_within_limit() {
+        let db = Connection::open_in_memory().unwrap();
+        initialize(&db).unwrap();
+        db.execute_batch(
+            "CREATE TABLE watchlist(title_id TEXT); INSERT INTO watchlist VALUES ('preserved');",
+        )
+        .unwrap();
+        let image = Poster {
+            bytes: vec![1; 8],
+            content_type: "image/jpeg".into(),
+            ttl: 100,
+        };
+        store_connection(&db, "old", &image, 16).unwrap();
+        db.execute("UPDATE poster_cache SET expires_at=unixepoch()-1", [])
+            .unwrap();
+        store_connection(&db, "first", &image, 16).unwrap();
+        assert!(cached_connection(&db, "old").unwrap().is_none());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM poster_cache", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        db.execute(
+            "UPDATE poster_cache SET expires_at=unixepoch()+10 WHERE title_id='first'",
+            [],
+        )
+        .unwrap();
+        store_connection(&db, "second", &image, 16).unwrap();
+        store_connection(&db, "third", &image, 16).unwrap();
+        assert!(cached_connection(&db, "first").unwrap().is_none());
+        assert!(cached_connection(&db, "second").unwrap().is_some());
+        assert_eq!(
+            db.query_row("SELECT SUM(length(image)) FROM poster_cache", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            16
+        );
+        let oversized = Poster {
+            bytes: vec![1; 17],
+            ..image
+        };
+        store_connection(&db, "too-big", &oversized, 16).unwrap();
+        assert!(cached_connection(&db, "too-big").unwrap().is_none());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM watchlist", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(cache_limit(None).unwrap(), DEFAULT_CACHE_BYTES);
+        assert_eq!(cache_limit(Some("1")).unwrap(), 1024 * 1024);
+        for invalid in ["0", "-1", "abc", "16385"] {
+            assert!(cache_limit(Some(invalid)).is_err());
+        }
+    }
+    #[test]
+    fn idle_cleanup_applies_new_limit_and_expiration_without_new_images() {
+        let path = std::env::temp_dir().join(format!(
+            "rustymdb-prune-{}-{}.sqlite3",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let c = Connection::open(&path).unwrap();
+        initialize(&c).unwrap();
+        c.execute(
+            "INSERT INTO poster_cache VALUES ('expired',zeroblob(8),'image/jpeg',unixepoch()-1)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO poster_cache VALUES ('live',zeroblob(8),'image/jpeg',unixepoch()+100)",
+            [],
+        )
+        .unwrap();
+        prune(&path, 4).unwrap();
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM poster_cache", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(c);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn tmdb_paths_cannot_redirect_downloads_to_other_hosts_or_paths() {
         assert_eq!(
             tmdb_image_url("/abc123.jpg").unwrap().as_str(),
@@ -289,12 +432,12 @@ mod tests {
             content_type: "image/jpeg".into(),
             ttl: 600,
         };
-        store_connection(&db, "tt1375666", &poster).unwrap();
+        store_connection(&db, "tt1375666", &poster, DEFAULT_CACHE_BYTES).unwrap();
         assert_eq!(
             cached_connection(&db, "tt1375666").unwrap().unwrap().bytes,
             poster.bytes
         );
-        store_connection(&db, "tt1375666", &placeholder()).unwrap();
+        store_connection(&db, "tt1375666", &placeholder(), DEFAULT_CACHE_BYTES).unwrap();
         assert_eq!(
             cached_connection(&db, "tt1375666")
                 .unwrap()

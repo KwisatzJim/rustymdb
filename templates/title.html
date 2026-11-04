@@ -97,7 +97,7 @@
     <details class="title-section" aria-labelledby="gallery-heading"><summary><h2 id="gallery-heading">Image gallery</h2></summary>
     <p>Additional artwork from TMDB. Select an image to view a larger version. Up to 12 images per category.</p>
     {% for group in extra.gallery %}<h3>{{ group.label }}</h3><div class="image-gallery gallery-{{ group.kind }}">
-    {% for image in group.images %}<figure><a href="/gallery-image/{{ id }}/{{ group.kind }}/{{ loop.index0 }}?large=true" target="_blank" rel="noopener"><img src="/gallery-image/{{ id }}/{{ group.kind }}/{{ loop.index0 }}" alt="{{ summary.title }} — {{ group.label }} {{ loop.index }}" loading="lazy" decoding="async"></a><figcaption>{{ group.label }} {{ loop.index }}{% if !image.language.is_empty() %} · {{ image.language }}{% endif %}</figcaption></figure>{% endfor %}
+    {% for image in group.images %}<figure><a href="/gallery-image/{{ id }}/{{ group.kind }}/{{ image.filename() }}?large=true" target="_blank" rel="noopener"><img src="/gallery-image/{{ id }}/{{ group.kind }}/{{ image.filename() }}" alt="{{ summary.title }} — {{ group.label }} {{ loop.index }}" loading="lazy" decoding="async"></a><figcaption>{{ group.label }} {{ loop.index }}{% if !image.language.is_empty() %} · {{ image.language }}{% endif %}</figcaption></figure>{% endfor %}
     </div>{% endfor %}
     {% include "tmdb-attribution.html" %}</details>
     {% endif %}{% endif %}

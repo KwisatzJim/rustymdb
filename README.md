@@ -97,6 +97,7 @@ its source. Trailers are external links, with no embedded player or autoplay.
 | --- | --- | --- |
 | `RUSTYMDB_BIND` | `127.0.0.1:3000` | Listening address and port |
 | `RUSTYMDB_DATA_DIR` | `data` | Persistent data directory |
+| `RUSTYMDB_IMAGE_CACHE_MB` | `512` | Maximum cached artwork payload in MiB (1–16384) |
 
 For example:
 
@@ -208,3 +209,19 @@ are removed; names from different countries remain visible. This adds display
 information only: local search still uses the existing IMDb title index. No
 `title.akas` download is needed. Credentials are required, and existing cached
 title supplements refresh on the next visit after upgrading.
+
+### Artwork cache limits
+
+Expired artwork is removed at startup, hourly, and on cache writes. The image
+cache defaults to 512 MiB of image payload; set `RUSTYMDB_IMAGE_CACHE_MB` to a
+whole number from 1 to 16384 to change it. Images expiring soonest are evicted
+first when the limit is reached. Images larger than the limit are served without
+being cached. Watchlists, notes, datasets, and backups are not pruned by this
+cleanup. Cleanup may wait until a dataset import releases SQLite's write lock.
+SQLite reuses freed pages; an existing database file does not immediately shrink,
+and the limit excludes database/index overhead and other tables.
+
+Gallery URLs identify artwork by filename, so provider reordering cannot change
+which image an existing URL represents. Removed artwork may return not found.
+Missing TMDB items are cached as absent instead of pausing unrelated requests;
+network failures, HTTP 429, and server errors retain the shared retry pause.

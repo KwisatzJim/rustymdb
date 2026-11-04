@@ -108,23 +108,29 @@ with tempfile.TemporaryDirectory(prefix='rustymdb-smoke-') as directory:
         assert 'Working title' in page and '夢の映画' in page
         assert '<script>unsafe title</script>' not in page and 'unsafe title' in page
         assert '<summary><h2 id="gallery-heading">Image gallery</h2></summary>' in page
-        assert 'src="/gallery-image/tt1375666/posters/0"' in page
-        assert 'posters/0?large=true' in page
+        assert 'src="/gallery-image/tt1375666/posters/synthetic.jpg"' in page
+        assert 'posters/synthetic.jpg?large=true' in page
         image_bytes = bytes([255,216,255,0])
         for size in ['small', 'large']:
             c.execute("INSERT INTO poster_cache VALUES (?,?, 'image/jpeg',unixepoch()+86400)", ('gallery:posters:' + size + ':/synthetic.jpg', image_bytes))
         c.commit()
         for suffix in ['', '?large=true']:
-            with urllib.request.urlopen(base + '/gallery-image/tt1375666/posters/0' + suffix, timeout=10) as response:
+            with urllib.request.urlopen(base + '/gallery-image/tt1375666/posters/synthetic.jpg' + suffix, timeout=10) as response:
                 assert response.read() == image_bytes
                 assert response.headers['Content-Type'] == 'image/jpeg'
                 assert response.headers['X-Content-Type-Options'] == 'nosniff'
-        for path in ['/gallery-image/tt1375666/posters/12', '/gallery-image/tt1375666/invalid/0', '/gallery-image/invalid/posters/0']:
+        for path in ['/gallery-image/tt1375666/posters/missing.jpg', '/gallery-image/tt1375666/invalid/synthetic.jpg', '/gallery-image/invalid/posters/synthetic.jpg']:
             try:
                 get(path)
                 raise AssertionError('Invalid gallery request was accepted')
             except urllib.error.HTTPError as error:
                 assert error.code == 404
+        # Reordering artwork changes neither the old filename URL nor its bytes.
+        supplement['gallery'][0]['images'].insert(0, dict(path='/other.jpg', language='en'))
+        c.execute("UPDATE tmdb_cache SET payload=? WHERE imdb_id='tt1375666'", (json.dumps(supplement),))
+        c.commit()
+        with urllib.request.urlopen(base + '/gallery-image/tt1375666/posters/synthetic.jpg', timeout=10) as response:
+            assert response.read() == image_bytes
         assert 'JustWatch' in page
         options = get('/options')
         token = re.search(r'name="token" value="([^"]+)"', options).group(1)

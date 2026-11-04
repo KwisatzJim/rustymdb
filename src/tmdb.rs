@@ -169,6 +169,11 @@ pub struct GalleryImage {
     pub path: String,
     pub language: String,
 }
+impl GalleryImage {
+    pub fn filename(&self) -> &str {
+        self.path.strip_prefix('/').unwrap_or_default()
+    }
+}
 fn gallery(value: &Value, media: &str) -> Vec<GalleryGroup> {
     if !matches!(media, "movie" | "tv") {
         return vec![];
@@ -1128,23 +1133,41 @@ impl Service {
             })
             .unwrap_or_default()
     }
+    fn pause_requests(&self) {
+        *self.retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Instant::now() + Duration::from_secs(60));
+    }
     async fn request(
         &self,
         path: &str,
         parameters: &[(&str, &str)],
         credentials: &Credentials,
-    ) -> Result<Value, String> {
-        let url = format!("{}{path}", self.base);
-        let mut request = self.client.get(url).query(parameters);
+    ) -> Result<Option<Value>, String> {
+        let mut request = self
+            .client
+            .get(format!("{}{path}", self.base))
+            .query(parameters);
         request = match credentials.kind {
             AuthKind::Key => request.query(&[("api_key", credentials.value.as_str())]),
             AuthKind::Token => request.bearer_auth(&credentials.value),
         };
-        // Never return reqwest errors or provider response bodies: they may contain a key-bearing URL.
-        let mut response = request.send().await.map_err(|_| {
-            "TMDB could not be reached. Check the connection and try again.".to_string()
-        })?;
+        // Never expose provider bodies or reqwest errors, which may include key-bearing URLs.
+        let mut response = match request.send().await {
+            Ok(response) => response,
+            Err(_) => {
+                self.pause_requests();
+                return Err(
+                    "TMDB could not be reached. Check the connection and try again.".into(),
+                );
+            }
+        };
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
         if !response.status().is_success() {
+            if response.status().is_server_error() || response.status().as_u16() == 429 {
+                self.pause_requests();
+            }
             return Err(match response.status().as_u16() {
                 401 | 403 => "TMDB rejected the credentials. Check Options.",
                 429 => "TMDB is rate limiting requests. Try again later.",
@@ -1153,20 +1176,31 @@ impl Service {
             .into());
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| "TMDB response could not be read.")?
-        {
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    self.pause_requests();
+                    return Err("TMDB response could not be read.".into());
+                }
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
             if bytes.len() + chunk.len() > 2 * 1024 * 1024 {
                 return Err("TMDB response exceeded the size limit.".into());
             }
             bytes.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&bytes).map_err(|_| "TMDB returned an unexpected response.".into())
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| "TMDB returned an unexpected response.".into())
     }
     async fn verify(&self, credentials: &Credentials) -> Result<(), String> {
-        let result = self.request("authentication", &[], credentials).await?;
+        let result = self
+            .request("authentication", &[], credentials)
+            .await?
+            .ok_or("TMDB authentication endpoint was not found.")?;
         if result["success"].as_bool() != Some(true) {
             return Err("TMDB did not validate these credentials.".into());
         }
@@ -1236,7 +1270,7 @@ impl Service {
         };
         let database = self.database.clone();
         if let Ok(Ok(Some(payload)))=tokio::task::spawn_blocking(move||Connection::open(database)?.query_row("SELECT payload FROM tmdb_collection_cache WHERE collection_id=?1 AND expires_at>unixepoch()",[id as i64],|r|r.get::<_,String>(0)).optional()).await
-            && let Ok(collection)=serde_json::from_str::<Collection>(&payload) && collection.id==id {return Ok(Some(collection));}
+            && let Ok(collection)=serde_json::from_str::<Option<Collection>>(&payload) && collection.as_ref().is_none_or(|c|c.id==id) {return Ok(collection);}
         if self
             .retry_after
             .lock()
@@ -1248,20 +1282,19 @@ impl Service {
             );
         }
         let result = async {
-            let value = self
+            let Some(value) = self
                 .request(
                     &format!("collection/{id}"),
                     &[("language", "en-US")],
                     &credentials,
                 )
-                .await?;
-            parse_collection(&value, id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            parse_collection(&value, id).map(Some)
         }
         .await;
-        if result.is_err() {
-            *self.retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Instant::now() + Duration::from_secs(60));
-        }
         if let Ok(collection) = &result
             && let Ok(payload) = serde_json::to_string(collection)
         {
@@ -1271,7 +1304,7 @@ impl Service {
                 c.execute("INSERT INTO tmdb_collection_cache VALUES (?1,?2,unixepoch()+86400) ON CONFLICT(collection_id) DO UPDATE SET payload=excluded.payload,expires_at=excluded.expires_at",rusqlite::params![id as i64,payload])?;Ok(())
             }).await;
         }
-        result.map(Some)
+        result
     }
 
     pub async fn resolve_title(&self, media: &str, id: u64) -> Result<Option<String>, String> {
@@ -1311,9 +1344,12 @@ impl Service {
             return Err("TMDB is temporarily unavailable. Try this link again shortly.".into());
         }
         let result = async {
-            let value = self
+            let Some(value) = self
                 .request(&format!("{media}/{id}/external_ids"), &[], &credentials)
-                .await?;
+                .await?
+            else {
+                return Ok(None);
+            };
             if media == "person" {
                 external_person_id(&value, id)
             } else {
@@ -1321,10 +1357,6 @@ impl Service {
             }
         }
         .await;
-        if result.is_err() {
-            *self.retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Instant::now() + Duration::from_secs(60));
-        }
         if let Ok(imdb_id) = &result {
             let imdb_id = imdb_id.clone();
             let media = media.to_owned();
@@ -1361,13 +1393,16 @@ impl Service {
             );
         }
         let result = async {
-            let found = self
+            let Some(found) = self
                 .request(
                     &format!("find/{imdb_id}"),
                     &[("external_source", "imdb_id")],
                     &credentials,
                 )
-                .await?;
+                .await?
+            else {
+                return Ok(None);
+            };
             let ids: Vec<_> = found["person_results"]
                 .as_array()
                 .into_iter()
@@ -1378,7 +1413,7 @@ impl Service {
                 return Ok(None);
             }
             let id = ids[0];
-            let details = self
+            let Some(details) = self
                 .request(
                     &format!("person/{id}"),
                     &[
@@ -1387,14 +1422,13 @@ impl Service {
                     ],
                     &credentials,
                 )
-                .await?;
+                .await?
+            else {
+                return Ok(None);
+            };
             parse_person(&details, imdb_id, id).map(Some)
         }
         .await;
-        if result.is_err() {
-            *self.retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Instant::now() + Duration::from_secs(60));
-        }
         if let Ok(person) = &result
             && let Ok(payload) = serde_json::to_string(person)
         {
@@ -1445,17 +1479,17 @@ impl Service {
             return Err("TMDB is temporarily unavailable; IMDb information is still shown.".into());
         }
         let result = async {
-            let found = self
+            let Some(found) = self
                 .request(
                     &format!("find/{id}"),
                     &[("external_source", "imdb_id"), ("language", "en-US")],
                     &credentials,
                 )
-                .await?;
+                .await? else {return Ok(None);};
             let Some(candidate) = candidate(&found, kind) else {
                 return Ok(None);
             };
-            let details = self
+            let Some(details) = self
                 .request(
                     &candidate.path,
                     &[
@@ -1476,14 +1510,10 @@ impl Service {
                     ],
                     &credentials,
                 )
-                .await?;
+                .await? else {return Ok(None);};
             parse_details(&details, id, candidate.url).map(Some)
         }
         .await;
-        if result.is_err() {
-            *self.retry_after.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Instant::now() + Duration::from_secs(60));
-        }
         if let Ok(value) = &result
             && let Ok(payload) = serde_json::to_string(value)
         {
@@ -1550,6 +1580,87 @@ mod tests {
         });
         (format!("http://{address}/3/"), task)
     }
+    #[tokio::test]
+    async fn missing_items_are_cached_without_blocking_other_provider_lookups() {
+        let directory = Directory::new();
+        let (base, server) = mock(vec![
+            (200, r#"{"success":true}"#),
+            (404, r#"{"status_code":34}"#), // collection
+            (404, r#"{"status_code":34}"#), // movie external ID
+            (404, r#"{"status_code":34}"#), // person external ID
+            (200, r#"{"person_results":[{"id":6193}]}"#),
+            (404, r#"{"status_code":34}"#), // person details
+            (200, r#"{"movie_results":[{"id":42}]}"#),
+            (404, r#"{"status_code":34}"#), // title details
+            (200, r#"{"movie_results":[{"id":603}]}"#),
+            (
+                200,
+                r#"{"imdb_id":"tt0133093","overview":"Still available"}"#,
+            ),
+        ])
+        .await;
+        let service = Service::with_base(&directory.0, base).unwrap();
+        service
+            .save("", "synthetic_regression_token_12345")
+            .await
+            .unwrap();
+        assert!(service.collection(42).await.unwrap().is_none());
+        assert!(service.resolve_title("movie", 42).await.unwrap().is_none());
+        assert!(service.resolve_person(42).await.unwrap().is_none());
+        assert!(service.person("nm0000138").await.unwrap().is_none());
+        assert!(
+            service
+                .supplement("tt1375666", Some("movie"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(service.retry_after.lock().unwrap().is_none());
+        assert_eq!(
+            service
+                .supplement("tt0133093", Some("movie"))
+                .await
+                .unwrap()
+                .unwrap()
+                .overview,
+            "Still available"
+        );
+        assert_eq!(server.await.unwrap().len(), 10);
+        // Missing results are cached rather than repeatedly requesting removed items.
+        assert!(service.collection(42).await.unwrap().is_none());
+        assert!(service.resolve_title("movie", 42).await.unwrap().is_none());
+        assert!(service.resolve_person(42).await.unwrap().is_none());
+        assert!(service.person("nm0000138").await.unwrap().is_none());
+        assert!(
+            service
+                .supplement("tt1375666", Some("movie"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[tokio::test]
+    async fn real_provider_outages_still_pause_uncached_requests() {
+        for status in [429, 503] {
+            let directory = Directory::new();
+            let (base, server) = mock(vec![(200, r#"{"success":true}"#), (status, r#"{}"#)]).await;
+            let service = Service::with_base(&directory.0, base).unwrap();
+            service
+                .save("", "synthetic_regression_token_12345")
+                .await
+                .unwrap();
+            assert!(service.collection(42).await.is_err());
+            assert_eq!(server.await.unwrap().len(), 2);
+            assert!(service.retry_after.lock().unwrap().is_some());
+            assert!(
+                service
+                    .supplement("tt1375666", Some("movie"))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
     #[test]
     fn alternative_titles_preserve_unicode_regions_types_and_missing_country() {
         let entries = serde_json::json!([
