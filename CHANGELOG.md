@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Where to watch with a shared country setting and JustWatch attribution.
+- Collapsible plot keywords, artwork galleries, and country-grouped alternative titles from TMDB.
+- Validated gallery image proxy with cached thumbnails and larger-image links.
 - Collapsible title and person sections.
 - Responsive principal cast with profile photos and combined character credits.
 - Local IMDb person birth/death years, professions and known-for titles after a credits refresh.

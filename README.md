@@ -169,3 +169,42 @@ ratings, not episode-specific certifications. Missing certifications are labeled
 “Not supplied.” Dates use YYYY-MM-DD. Existing positive TMDB title caches refresh
 on the next visit after this upgrade to fetch the additional fields. IMDb fields
 remain unchanged. No requests are made without saved TMDB credentials.
+
+### Where to watch
+
+Options → Where to watch saves a shared two-letter viewing country (default US).
+With TMDB configured, movie and series pages show a collapsible provider section
+with subscription, free, ad-supported, rental and purchase groups when listed.
+Availability is provided by JustWatch via TMDB and cached for up to 24 hours.
+The TMDB viewing-options link leads to provider links; RustyMDb does not embed
+provider players or check subscriptions. No listing does not establish that a
+title is unavailable. Episode pages do not inherit series availability.
+The country setting is stored in SQLite and included in database backups.
+
+### Plot keywords
+
+When TMDB supplies keywords for a movie or series, its title page includes a
+collapsed **Plot keywords** section. These describe themes separately from genres
+and may contain spoilers. Duplicate keywords are combined; keywords are plain
+text, not search links. Existing cached details refresh on the next visit after
+this update. Credentials are required; episode pages do not inherit series keywords.
+
+### Image galleries
+
+Movie and series pages show a collapsible TMDB gallery when artwork is available,
+with up to 12 posters, backgrounds, and title logos per category. English and
+language-neutral artwork is requested. Thumbnails load lazily; selecting one
+opens a larger image through RustyMDb. Images use the local proxy/cache (24 hours),
+validated provider filenames, no redirects, and the existing 5 MiB download
+limit. Unsupported formats are omitted. TMDB credentials are required even for
+cached gallery image requests. Episode galleries are not included.
+
+### Alternative titles
+
+Movie and series pages include a collapsible **Alternative titles** section when
+TMDB provides regional names. Titles are grouped by country code, retaining
+provider labels such as working title and Unicode text. Exact duplicate entries
+are removed; names from different countries remain visible. This adds display
+information only: local search still uses the existing IMDb title index. No
+`title.akas` download is needed. Credentials are required, and existing cached
+title supplements refresh on the next visit after upgrading.

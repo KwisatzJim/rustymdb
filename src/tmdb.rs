@@ -12,7 +12,32 @@ use std::{
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
 pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute_batch("CREATE TABLE IF NOT EXISTS tmdb_collection_cache(collection_id INTEGER PRIMARY KEY,payload TEXT NOT NULL,expires_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS tmdb_title_links(media TEXT NOT NULL,tmdb_id INTEGER NOT NULL,imdb_id TEXT,expires_at INTEGER NOT NULL,PRIMARY KEY(media,tmdb_id)); CREATE TABLE IF NOT EXISTS tmdb_person_cache(imdb_id TEXT PRIMARY KEY,payload TEXT NOT NULL,expires_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS tmdb_cache(imdb_id TEXT PRIMARY KEY,payload TEXT NOT NULL,expires_at INTEGER NOT NULL);")
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS tmdb_preferences(name TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS tmdb_collection_cache(collection_id INTEGER PRIMARY KEY,payload TEXT NOT NULL,expires_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS tmdb_title_links(media TEXT NOT NULL,tmdb_id INTEGER NOT NULL,imdb_id TEXT,expires_at INTEGER NOT NULL,PRIMARY KEY(media,tmdb_id)); CREATE TABLE IF NOT EXISTS tmdb_person_cache(imdb_id TEXT PRIMARY KEY,payload TEXT NOT NULL,expires_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS tmdb_cache(imdb_id TEXT PRIMARY KEY,payload TEXT NOT NULL,expires_at INTEGER NOT NULL);")
+}
+
+pub fn normalize_country(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_uppercase();
+    (value.len() == 2 && value.bytes().all(|b| b.is_ascii_uppercase())).then_some(value)
+}
+pub fn watch_country(path: &Path) -> rusqlite::Result<String> {
+    let c = Connection::open(path)?;
+    let country = c
+        .query_row(
+            "SELECT value FROM tmdb_preferences WHERE name='watch_country'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(country
+        .and_then(|s| normalize_country(&s))
+        .unwrap_or_else(|| "US".into()))
+}
+pub fn save_watch_country(path: &Path, country: &str) -> rusqlite::Result<()> {
+    let country = normalize_country(country).ok_or(rusqlite::Error::InvalidQuery)?;
+    let c = Connection::open(path)?;
+    c.busy_timeout(Duration::from_secs(5))?;
+    c.execute("INSERT INTO tmdb_preferences VALUES ('watch_country',?1) ON CONFLICT(name) DO UPDATE SET value=excluded.value", [country])?;
+    Ok(())
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -58,6 +83,10 @@ impl Credentials {
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct Supplement {
+    pub alternative_titles: Vec<AlternativeTitleRegion>,
+    pub gallery: Vec<GalleryGroup>,
+    pub keywords: Vec<String>,
+    pub watch_regions: Vec<WatchRegion>,
     pub regional_releases: Vec<RegionalReleases>,
     pub collections: Vec<CollectionReference>,
     pub recommendations: Vec<RelatedTitle>,
@@ -78,6 +107,200 @@ pub struct Supplement {
     pub budget: String,
     pub revenue: String,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AlternativeTitleRegion {
+    pub country: String,
+    pub titles: Vec<AlternativeTitle>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AlternativeTitle {
+    pub title: String,
+    pub kind: String,
+}
+fn alternative_titles(value: &Value, media: &str) -> Vec<AlternativeTitleRegion> {
+    let key = match media {
+        "movie" => "titles",
+        "tv" => "results",
+        _ => return vec![],
+    };
+    let mut regions = std::collections::BTreeMap::<String, Vec<AlternativeTitle>>::new();
+    let mut seen = std::collections::HashSet::new();
+    for item in value["alternative_titles"][key]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let title = text(item, "title");
+        if title.is_empty() {
+            continue;
+        }
+        let country = text(item, "iso_3166_1");
+        if !country.is_empty() && normalize_country(&country).as_deref() != Some(country.as_str()) {
+            continue;
+        }
+        let kind = text(item, "type");
+        if !seen.insert((country.clone(), title.clone(), kind.clone())) {
+            continue;
+        }
+        let country = if country.is_empty() {
+            "Country not supplied".into()
+        } else {
+            country
+        };
+        regions
+            .entry(country)
+            .or_default()
+            .push(AlternativeTitle { title, kind });
+    }
+    regions
+        .into_iter()
+        .map(|(country, titles)| AlternativeTitleRegion { country, titles })
+        .collect()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GalleryGroup {
+    pub kind: String,
+    pub label: String,
+    pub images: Vec<GalleryImage>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GalleryImage {
+    pub path: String,
+    pub language: String,
+}
+fn gallery(value: &Value, media: &str) -> Vec<GalleryGroup> {
+    if !matches!(media, "movie" | "tv") {
+        return vec![];
+    }
+    let mut groups = Vec::new();
+    for (kind, label) in [
+        ("posters", "Posters"),
+        ("backdrops", "Backgrounds"),
+        ("logos", "Title logos"),
+    ] {
+        let mut seen = std::collections::HashSet::new();
+        let images = value["images"][kind]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| {
+                let path = text(item, "file_path");
+                if !crate::posters::valid_tmdb_path(&path) || !seen.insert(path.clone()) {
+                    return None;
+                }
+                let language = text(item, "iso_639_1");
+                let language =
+                    if language.len() == 2 && language.bytes().all(|b| b.is_ascii_lowercase()) {
+                        language
+                    } else {
+                        String::new()
+                    };
+                Some(GalleryImage { path, language })
+            })
+            .take(12)
+            .collect::<Vec<_>>();
+        if !images.is_empty() {
+            groups.push(GalleryGroup {
+                kind: kind.into(),
+                label: label.into(),
+                images,
+            });
+        }
+    }
+    groups
+}
+
+fn plot_keywords(value: &Value, media: &str) -> Vec<String> {
+    let key = match media {
+        "movie" => "keywords",
+        "tv" => "results",
+        _ => return vec![],
+    };
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
+    value["keywords"][key]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = item["id"]
+                .as_u64()
+                .filter(|id| (1..=i32::MAX as u64).contains(id))?;
+            let name = text(item, "name");
+            if name.is_empty()
+                || seen_ids.contains(&id)
+                || seen_names.contains(&name.to_lowercase())
+            {
+                return None;
+            }
+            seen_ids.insert(id);
+            seen_names.insert(name.to_lowercase());
+            Some(name)
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WatchRegion {
+    pub country: String,
+    pub groups: Vec<WatchGroup>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WatchGroup {
+    pub label: String,
+    pub providers: Vec<String>,
+}
+pub struct WatchView {
+    pub country: String,
+    pub groups: Vec<WatchGroup>,
+    pub url: String,
+}
+fn watch_regions(value: &Value) -> Vec<WatchRegion> {
+    let Some(regions) = value["watch/providers"]["results"].as_object() else {
+        return vec![];
+    };
+    let mut result = Vec::new();
+    for (country, data) in regions {
+        if normalize_country(country).as_deref() != Some(country.as_str()) {
+            continue;
+        }
+        let mut groups = Vec::new();
+        for (key, label) in [
+            ("flatrate", "Subscription"),
+            ("free", "Free"),
+            ("ads", "Free with ads"),
+            ("rent", "Rent"),
+            ("buy", "Buy"),
+        ] {
+            let mut entries: Vec<_> = data[key].as_array().into_iter().flatten().collect();
+            entries.sort_by_key(|item| item["display_priority"].as_u64().unwrap_or(u64::MAX));
+            let mut seen = std::collections::HashSet::new();
+            let providers = entries
+                .into_iter()
+                .filter_map(|item| {
+                    let id = item["provider_id"].as_u64().filter(|id| *id > 0)?;
+                    let name = text(item, "provider_name");
+                    (!name.is_empty() && seen.insert(id)).then_some(name)
+                })
+                .collect::<Vec<_>>();
+            if !providers.is_empty() {
+                groups.push(WatchGroup {
+                    label: label.into(),
+                    providers,
+                });
+            }
+        }
+        if !groups.is_empty() {
+            result.push(WatchRegion {
+                country: country.clone(),
+                groups,
+            });
+        }
+    }
+    result
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RegionalReleases {
     pub country: String,
@@ -484,6 +707,21 @@ fn expanded_credits(value: &Value) -> (Vec<ExpandedCredit>, Vec<ExpandedCredit>)
 }
 
 impl Supplement {
+    pub fn watch_view(&self, country: &str) -> Option<WatchView> {
+        let (media, id) = source_title_reference(&self.source_url)?;
+        let country = normalize_country(country)?;
+        Some(WatchView {
+            groups: self
+                .watch_regions
+                .iter()
+                .find(|r| r.country == country)
+                .map(|r| r.groups.clone())
+                .unwrap_or_default(),
+            url: format!("https://www.themoviedb.org/{media}/{id}/watch?locale={country}"),
+            country,
+        })
+    }
+
     pub fn has_information(&self) -> bool {
         [
             &self.overview,
@@ -790,7 +1028,20 @@ fn parse_details(value: &Value, imdb_id: &str, source_url: String) -> Result<Sup
     let regional_releases = source_title_reference(&source_url)
         .map(|(media, _)| regional_releases(value, media))
         .unwrap_or_default();
+    let keywords = source_title_reference(&source_url)
+        .map(|(media, _)| plot_keywords(value, media))
+        .unwrap_or_default();
+    let gallery = source_title_reference(&source_url)
+        .map(|(media, _)| gallery(value, media))
+        .unwrap_or_default();
+    let alternative_titles = source_title_reference(&source_url)
+        .map(|(media, _)| alternative_titles(value, media))
+        .unwrap_or_default();
     Ok(Supplement {
+        alternative_titles,
+        gallery,
+        keywords,
+        watch_regions: watch_regions(value),
         regional_releases,
         collections,
         recommendations,
@@ -1212,15 +1463,16 @@ impl Service {
                             "append_to_response",
                             match candidate.path.split('/').collect::<Vec<_>>().as_slice() {
                                 ["movie", _] => {
-                                    "external_ids,credits,videos,recommendations,release_dates"
+                                    "external_ids,credits,videos,recommendations,release_dates,watch/providers,keywords,images,alternative_titles"
                                 }
                                 ["tv", _] => {
-                                    "external_ids,credits,videos,recommendations,content_ratings"
+                                    "external_ids,credits,videos,recommendations,content_ratings,watch/providers,keywords,images,alternative_titles"
                                 }
                                 _ => "external_ids,credits,videos",
                             },
                         ),
                         ("language", "en-US"),
+                        ("include_image_language", "en,null"),
                     ],
                     &credentials,
                 )
@@ -1298,6 +1550,332 @@ mod tests {
         });
         (format!("http://{address}/3/"), task)
     }
+    #[test]
+    fn alternative_titles_preserve_unicode_regions_types_and_missing_country() {
+        let entries = serde_json::json!([
+            {"iso_3166_1":"JP","title":"夢の映画","type":""},
+            {"iso_3166_1":"US","title":" Earlier title ","type":" Working title "},
+            {"iso_3166_1":"US","title":"Earlier title","type":"Working title"},
+            {"iso_3166_1":"GB","title":"Earlier title","type":""},
+            {"iso_3166_1":null,"title":"Unknown region","type":null},
+            {"iso_3166_1":"bad","title":"Invalid country"},
+            {"iso_3166_1":"US","title":" "}]);
+        for (media, key) in [("movie", "titles"), ("tv", "results")] {
+            let mut value = serde_json::json!({"alternative_titles":{}});
+            value["alternative_titles"][key] = entries.clone();
+            let regions = alternative_titles(&value, media);
+            assert_eq!(regions.len(), 4);
+            assert_eq!(
+                regions.iter().find(|r| r.country == "JP").unwrap().titles[0].title,
+                "夢の映画"
+            );
+            let us = regions.iter().find(|r| r.country == "US").unwrap();
+            assert_eq!(us.titles.len(), 1);
+            assert_eq!(us.titles[0].kind, "Working title");
+            assert!(regions.iter().any(|r| r.country == "Country not supplied"));
+            assert!(alternative_titles(&value, "episode").is_empty());
+        }
+        assert!(alternative_titles(&Value::Null, "movie").is_empty());
+    }
+    #[tokio::test]
+    async fn alternative_title_requests_refresh_old_cache_and_support_both_shapes() {
+        for (kind, found, detail) in [
+            (
+                "movie",
+                r#"{"movie_results":[{"id":42}]}"#,
+                r#"{"imdb_id":"tt1375666","alternative_titles":{"titles":[{"iso_3166_1":"FR","title":"Un autre titre","type":""}]}}"#,
+            ),
+            (
+                "tv",
+                r#"{"tv_results":[{"id":42}]}"#,
+                r#"{"external_ids":{"imdb_id":"tt1375666"},"alternative_titles":{"results":[{"iso_3166_1":"FR","title":"Un autre titre","type":""}]}}"#,
+            ),
+        ] {
+            let directory = Directory::new();
+            let (base, server) = mock(vec![
+                (200, r#"{"success":true}"#),
+                (200, found),
+                (200, detail),
+            ])
+            .await;
+            let service = Service::with_base(&directory.0, base).unwrap();
+            assert!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            service
+                .save("", "test_read_access_token_12345")
+                .await
+                .unwrap();
+            let mut old = serde_json::to_value(Supplement::default()).unwrap();
+            old.as_object_mut().unwrap().remove("alternative_titles");
+            Connection::open(&service.database)
+                .unwrap()
+                .execute(
+                    "INSERT INTO tmdb_cache VALUES ('tt1375666',?1,unixepoch()+86400)",
+                    [old.to_string()],
+                )
+                .unwrap();
+            let data = service
+                .supplement("tt1375666", Some(kind))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(data.alternative_titles[0].titles[0].title, "Un autre titre");
+            assert!(server.await.unwrap()[2].contains("alternative_titles"));
+            assert_eq!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .alternative_titles
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn galleries_validate_paths_deduplicate_and_bound_each_category() {
+        let mut value = serde_json::json!({"images":{"posters":[{"file_path":"/poster.jpg","iso_639_1":"en"},{"file_path":"/poster.jpg"},{"file_path":"https://evil.example/a.jpg"},{"file_path":"/a.svg"},{"file_path":"/../a.jpg"}],"logos":[{"file_path":"/logo.png","iso_639_1":null}]}});
+        value["images"]["backdrops"] = serde_json::json!(
+            (0..20)
+                .map(|i| serde_json::json!({"file_path":format!("/background{i}.jpg")}))
+                .collect::<Vec<_>>()
+        );
+        for media in ["movie", "tv"] {
+            let groups = gallery(&value, media);
+            assert_eq!(groups.len(), 3);
+            assert_eq!(groups[0].images.len(), 1);
+            assert_eq!(groups[0].images[0].language, "en");
+            assert_eq!(groups[1].images.len(), 12);
+            assert!(groups[2].images[0].language.is_empty());
+        }
+        assert!(gallery(&value, "episode").is_empty());
+        assert!(gallery(&Value::Null, "movie").is_empty());
+    }
+    #[tokio::test]
+    async fn gallery_requests_are_cached_and_credential_gated() {
+        for (kind, found) in [
+            ("movie", r#"{"movie_results":[{"id":42}]}"#),
+            ("tv", r#"{"tv_results":[{"id":42}]}"#),
+        ] {
+            let directory = Directory::new();
+            let (base,server)=mock(vec![(200,r#"{"success":true}"#),(200,found),(200,r#"{"external_ids":{"imdb_id":"tt1375666"},"images":{"posters":[{"file_path":"/poster.jpg"}]}}"#)]).await;
+            let service = Service::with_base(&directory.0, base).unwrap();
+            assert!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            service
+                .save("", "test_read_access_token_12345")
+                .await
+                .unwrap();
+            let data = service
+                .supplement("tt1375666", Some(kind))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(data.gallery[0].images[0].path, "/poster.jpg");
+            let requests = server.await.unwrap();
+            assert!(requests[2].contains("images"));
+            assert!(requests[2].contains("include_image_language=en%2Cnull"));
+            assert!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn plot_keywords_support_movie_and_tv_shapes_and_remove_duplicates() {
+        let entries = serde_json::json!([
+            {"id":1,"name":"time travel"}, {"id":1,"name":"Duplicate ID"},
+            {"id":2,"name":" Time Travel "}, {"id":3,"name":"courtroom"},
+            {"id":0,"name":"Invalid"}, {"id":4,"name":" "},
+            {"id":5,"name":"<script>alert('x')</script>"}]);
+        for (media, key) in [("movie", "keywords"), ("tv", "results")] {
+            let mut value = serde_json::json!({"keywords":{}});
+            value["keywords"][key] = entries.clone();
+            assert_eq!(
+                plot_keywords(&value, media),
+                vec!["time travel", "courtroom", "<script>alert('x')</script>"]
+            );
+        }
+        assert!(plot_keywords(&Value::Null, "movie").is_empty());
+        assert!(
+            plot_keywords(
+                &serde_json::json!({"keywords":{"keywords":entries}}),
+                "episode"
+            )
+            .is_empty()
+        );
+    }
+    #[tokio::test]
+    async fn keyword_requests_are_credential_gated_and_cached_for_both_media_types() {
+        for (kind, found, detail) in [
+            (
+                "movie",
+                r#"{"movie_results":[{"id":42}]}"#,
+                r#"{"imdb_id":"tt1375666","keywords":{"keywords":[{"id":1,"name":"dream"}]}}"#,
+            ),
+            (
+                "tv",
+                r#"{"tv_results":[{"id":42}]}"#,
+                r#"{"external_ids":{"imdb_id":"tt1375666"},"keywords":{"results":[{"id":1,"name":"dream"}]}}"#,
+            ),
+        ] {
+            let directory = Directory::new();
+            let (base, server) = mock(vec![
+                (200, r#"{"success":true}"#),
+                (200, found),
+                (200, detail),
+            ])
+            .await;
+            let service = Service::with_base(&directory.0, base).unwrap();
+            assert!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            service
+                .save("", "test_read_access_token_12345")
+                .await
+                .unwrap();
+            // Upgrade old cached title details rather than hiding newly available keywords.
+            let mut old = serde_json::to_value(Supplement::default()).unwrap();
+            old.as_object_mut().unwrap().remove("keywords");
+            Connection::open(&service.database)
+                .unwrap()
+                .execute(
+                    "INSERT INTO tmdb_cache VALUES ('tt1375666',?1,unixepoch()+86400)",
+                    [old.to_string()],
+                )
+                .unwrap();
+            let data = service
+                .supplement("tt1375666", Some(kind))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(data.keywords, vec!["dream"]);
+            assert!(server.await.unwrap()[2].contains("keywords"));
+            assert_eq!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .keywords,
+                vec!["dream"]
+            );
+        }
+    }
+
+    #[test]
+    fn watch_providers_group_deduplicate_and_build_only_fixed_tmdb_links() {
+        let data = serde_json::json!({"watch/providers":{"results":{
+            "US":{"link":"https://evil.example/","flatrate":[{"provider_id":1,"provider_name":"Later","display_priority":10},{"provider_id":2,"provider_name":"First","display_priority":1},{"provider_id":2,"provider_name":"Duplicate"},{"provider_id":0,"provider_name":"Invalid"}],"rent":[{"provider_id":1,"provider_name":"Later"}],"buy":[{"provider_id":3,"provider_name":""}]},
+            "GB":{"free":[{"provider_id":4,"provider_name":"Free service"}],"ads":[{"provider_id":5,"provider_name":"Ads service"}]},
+            "bad":{"rent":[{"provider_id":1,"provider_name":"Invalid country"}]}
+        }}});
+        let supplement = Supplement {
+            watch_regions: watch_regions(&data),
+            source_url: "https://www.themoviedb.org/movie/42".into(),
+            ..Default::default()
+        };
+        assert_eq!(supplement.watch_regions.len(), 2);
+        let us = supplement.watch_view("us").unwrap();
+        assert_eq!(us.groups.len(), 2);
+        assert_eq!(us.groups[0].providers, vec!["First", "Later"]);
+        assert_eq!(us.groups[1].label, "Rent");
+        assert_eq!(
+            us.url,
+            "https://www.themoviedb.org/movie/42/watch?locale=US"
+        );
+        assert_eq!(supplement.watch_view("GB").unwrap().groups.len(), 2);
+        assert!(supplement.watch_view("CA").unwrap().groups.is_empty());
+        assert!(supplement.watch_view("https://evil.example").is_none());
+        assert!(watch_regions(&Value::Null).is_empty());
+        let episode = Supplement {
+            source_url: "https://www.themoviedb.org/tv/42/season/1/episode/1".into(),
+            ..supplement
+        };
+        assert!(episode.watch_view("US").is_none());
+    }
+    #[test]
+    fn viewing_country_defaults_and_persists_without_credentials() {
+        let directory = Directory::new();
+        let path = directory.0.join("preferences.sqlite3");
+        initialize(&Connection::open(&path).unwrap()).unwrap();
+        assert_eq!(watch_country(&path).unwrap(), "US");
+        save_watch_country(&path, " gb ").unwrap();
+        assert_eq!(watch_country(&path).unwrap(), "GB");
+        for bad in ["", "USA", "1A", "é", "../US"] {
+            assert!(save_watch_country(&path, bad).is_err());
+        }
+        assert_eq!(watch_country(&path).unwrap(), "GB");
+    }
+    #[tokio::test]
+    async fn watch_provider_requests_are_cached_for_movies_and_tv() {
+        for (kind, found) in [
+            ("movie", r#"{"movie_results":[{"id":42}]}"#),
+            ("tv", r#"{"tv_results":[{"id":42}]}"#),
+        ] {
+            let directory = Directory::new();
+            let (base,server)=mock(vec![(200,r#"{"success":true}"#),(200,found),(200,r#"{"external_ids":{"imdb_id":"tt1375666"},"watch/providers":{"results":{"US":{"flatrate":[{"provider_id":1,"provider_name":"Example service"}]}}}}"#)]).await;
+            let service = Service::with_base(&directory.0, base).unwrap();
+            assert!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            service
+                .save("", "test_read_access_token_12345")
+                .await
+                .unwrap();
+            let data = service
+                .supplement("tt1375666", Some(kind))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                data.watch_view("US").unwrap().groups[0].providers[0],
+                "Example service"
+            );
+            let requests = server.await.unwrap();
+            assert!(requests[2].contains("watch%2Fproviders"));
+            assert!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            service.remove().unwrap();
+            assert!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
     #[test]
     fn regional_dates_keep_release_types_countries_and_missing_certifications() {
         let value = serde_json::json!({"release_dates":{"results":[
@@ -1396,6 +1974,10 @@ mod tests {
             if kind == "episode" {
                 assert!(!requests[2].contains("content_ratings"));
                 assert!(!requests[2].contains("release_dates"));
+                assert!(!requests[2].contains("watch%2Fproviders"));
+                assert!(!requests[2].contains("keywords"));
+                assert!(!requests[2].contains("%2Cimages"));
+                assert!(!requests[2].contains("alternative_titles"));
             }
             assert!(
                 service

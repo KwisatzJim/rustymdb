@@ -201,6 +201,87 @@ async fn collection_page(
     Ok((status, [("cache-control", "no-store")], Html(html)).into_response())
 }
 
+#[derive(Default, Deserialize)]
+struct GalleryQuery {
+    #[serde(default)]
+    large: bool,
+}
+async fn gallery_image(
+    State(state): State<AppState>,
+    Path((id, kind, index)): Path<(String, String, usize)>,
+    Query(query): Query<GalleryQuery>,
+) -> Result<([(axum::http::header::HeaderName, String); 3], Vec<u8>), StatusCode> {
+    use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
+    if !imdb::valid_title_id(&id)
+        || !matches!(kind.as_str(), "posters" | "backdrops" | "logos")
+        || index >= 12
+    {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if state.tmdb.method().is_empty() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let _permit = state
+        .photo_limit
+        .acquire()
+        .await
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+    let data = state
+        .tmdb
+        .supplement(&id, None)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let image = data
+        .gallery
+        .iter()
+        .find(|group| group.kind == kind)
+        .and_then(|group| group.images.get(index))
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if !posters::valid_tmdb_path(&image.path) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let key = format!(
+        "gallery:{kind}:{}:{}",
+        if query.large { "large" } else { "small" },
+        image.path
+    );
+    let path = state.database.clone();
+    let cache_key = key.clone();
+    let cached = tokio::task::spawn_blocking(move || posters::cached(&path, &cache_key))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .flatten();
+    let photo = match cached {
+        Some(photo) => photo,
+        None => {
+            let photo =
+                posters::fetch_gallery(&state.poster_client, &image.path, query.large, &kind)
+                    .await
+                    .map_err(|_| StatusCode::BAD_GATEWAY)?;
+            let path = state.database.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = posters::store(&path, &key, &photo);
+                photo
+            })
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        }
+    };
+    Ok((
+        [
+            (CONTENT_TYPE, photo.content_type),
+            (
+                CACHE_CONTROL,
+                format!("private, max-age={}", photo.ttl.min(86400)),
+            ),
+            (X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
+        ],
+        photo.bytes,
+    ))
+}
+
 async fn person_photo(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -398,6 +479,7 @@ async fn maintenance_page(State(state): State<AppState>) -> Result<Html<String>,
 #[derive(Template)]
 #[template(path = "options.html")]
 struct OptionsPage {
+    watch_country: String,
     retention: retention::View,
     schedules: Vec<maintenance::Schedule>,
     form_token: String,
@@ -433,6 +515,7 @@ async fn options_page(
         Some("saved") => {
             "TMDB credentials saved and verified. Supplemental information is enabled."
         }
+        Some("country") => "Viewing country saved. Where to watch now uses this region.",
         Some("retention") => {
             "Backup retention saved. No files were removed. Cleanup runs only after a new verified scheduled backup."
         }
@@ -446,6 +529,7 @@ async fn options_page(
     let schedules = load_schedules(state.maintenance.clone()).await?;
     let retention = load_retention(state.database.clone()).await?;
     let html = OptionsPage {
+        watch_country: load_watch_country(state.database.clone()).await?,
         retention,
         schedules,
         form_token: state.form_token,
@@ -494,6 +578,14 @@ async fn options_update(
                 )
             })?;
             let html = OptionsPage {
+                watch_country: load_watch_country(state.database.clone())
+                    .await
+                    .map_err(|_| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Viewing country could not be loaded.",
+                        )
+                    })?,
                 retention,
                 schedules,
                 form_token: state.form_token,
@@ -566,6 +658,48 @@ async fn schedules_update(
         )
     })?;
     Ok(Redirect::to("/options?result=schedules#schedules"))
+}
+
+async fn load_watch_country(path: PathBuf) -> Result<String, StatusCode> {
+    tokio::task::spawn_blocking(move || tmdb::watch_country(&path))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+#[derive(Deserialize)]
+struct CountryForm {
+    token: String,
+    country: String,
+}
+async fn country_update(
+    State(state): State<AppState>,
+    Form(input): Form<CountryForm>,
+) -> Result<Redirect, (StatusCode, &'static str)> {
+    if input.token != state.form_token {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "This form expired. Reload Options and try again.",
+        ));
+    }
+    let country = tmdb::normalize_country(&input.country).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Enter a two-letter country code, such as US or GB.",
+    ))?;
+    tokio::task::spawn_blocking(move || tmdb::save_watch_country(&state.database, &country))
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Viewing country could not be saved.",
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Viewing country could not be saved.",
+            )
+        })?;
+    Ok(Redirect::to("/options?result=country#viewing-country"))
 }
 
 async fn load_retention(path: PathBuf) -> Result<retention::View, StatusCode> {
@@ -708,6 +842,7 @@ async fn maintenance_script() -> ([(&'static str, &'static str); 1], &'static st
 #[derive(Template)]
 #[template(path = "title.html")]
 struct TitlePage {
+    watch: Option<tmdb::WatchView>,
     id: String,
     summary: imdb::SearchTitle,
     details: imdb::TitleDetails,
@@ -1124,7 +1259,12 @@ async fn title(
             notice.clear();
         }
     }
+    let country = load_watch_country(state.database.clone()).await?;
+    let watch = supplemental
+        .as_ref()
+        .and_then(|data| data.watch_view(&country));
     TitlePage {
+        watch,
         id,
         summary,
         details,
@@ -1259,6 +1399,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .route("/options", get(options_page).post(options_update))
         .route("/options/schedules", post(schedules_update))
+        .route("/options/country", post(country_update))
         .route("/options/retention", post(retention_update))
         .route("/static/tmdb-logo.svg", get(tmdb_logo))
         .route("/maintenance/status", get(maintenance_status))
@@ -1272,6 +1413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/person/{id}", get(person_page))
         .route("/tmdb-person/{id}", get(tmdb_person_link))
         .route("/person-photo/{id}", get(person_photo))
+        .route("/gallery-image/{id}/{kind}/{index}", get(gallery_image))
         .route("/poster/{id}", get(poster))
         .route("/watchlist", get(watchlist_page))
         .route("/watchlist/{id}", post(watchlist_update))

@@ -26,6 +26,12 @@
 {% if !method.is_empty() %}<div class="options-actions"><form action="/options" method="post"><input type="hidden" name="token" value="{{ form_token }}"><button class="secondary-button" type="submit" name="action" value="test">Test connection</button></form><form action="/options" method="post"><input type="hidden" name="token" value="{{ form_token }}"><button class="secondary-button" type="submit" name="action" value="remove">Remove credentials and disable TMDB</button></form></div>{% endif %}
 <p class="maintenance-help">Credentials are stored in an owner-readable server file, separately from SQLite. Database-only backups exclude them; configure TMDB again after restoring to another server. These are shared server options for everyone who can reach this instance.</p>
 </section>
+<section id="viewing-country" aria-labelledby="viewing-country-heading"><h2 id="viewing-country-heading">Where to watch</h2>
+<p>Select the country used for streaming, rental, and purchase availability. This shared setting defaults to US. TMDB credentials are required to show providers.</p>
+<form action="/options/country" method="post" class="options-form"><input type="hidden" name="token" value="{{ form_token }}">
+<label for="watch-country">Two-letter country code</label><input id="watch-country" name="country" value="{{ watch_country }}" maxlength="2" minlength="2" pattern="[A-Za-z]{2}" required autocapitalize="characters" spellcheck="false">
+<p class="maintenance-help">Examples: US (United States), GB (United Kingdom), CA (Canada), AU (Australia), DE (Germany), FR (France).</p>
+<button type="submit">Save viewing country</button></form></section>
 <section id="schedules" aria-labelledby="schedules-heading"><h2 id="schedules-heading">Automatic maintenance</h2>
 <p>Schedules run while this server is running, using the same job runner as the Maintenance tab. Only one job runs at a time. Overdue jobs wait for the runner to become available; missed intervals are combined into one run.</p>
 <form action="/options/schedules" method="post" class="options-form">

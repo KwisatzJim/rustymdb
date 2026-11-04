@@ -171,6 +171,35 @@ fn tmdb_image_url(path: &str) -> Result<reqwest::Url, Error> {
     ))?)
 }
 
+pub fn valid_tmdb_path(path: &str) -> bool {
+    tmdb_image_url(path).is_ok()
+}
+pub async fn fetch_gallery(
+    client: &reqwest::Client,
+    path: &str,
+    large: bool,
+    kind: &str,
+) -> Result<Poster, Error> {
+    let mut url = tmdb_image_url(path)?;
+    if large {
+        let size = match kind {
+            "posters" => "w780",
+            "backdrops" => "w1280",
+            "logos" => "original",
+            _ => return Err("Invalid gallery category".into()),
+        };
+        url.set_path(&url.path().replace("/t/p/w500/", &format!("/t/p/{size}/")));
+    }
+    let bytes = read_limited(client.get(url).send().await?, 5 * 1024 * 1024).await?;
+    let content_type =
+        content_type(&bytes).ok_or("TMDB returned an unsupported gallery image format")?;
+    Ok(Poster {
+        bytes,
+        content_type: content_type.into(),
+        ttl: 86400,
+    })
+}
+
 pub async fn fetch_tmdb(client: &reqwest::Client, path: &str) -> Result<Poster, Error> {
     let response = client.get(tmdb_image_url(path)?).send().await?;
     let bytes = read_limited(response, 5 * 1024 * 1024).await?;
