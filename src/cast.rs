@@ -149,7 +149,7 @@ fn lookup_connection(connection: &Connection, title_id: &str) -> rusqlite::Resul
         };
         let mut statement = connection.prepare("SELECT c.person_id,p.primary_name,c.characters,c.category FROM imdb_cast c
             LEFT JOIN imdb_people p ON p.person_id=c.person_id WHERE c.title_id=?1 ORDER BY c.ordering")?;
-        let members = statement
+        let rows = statement
             .query_map([title_id], |row| {
                 let id: String = row.get(0)?;
                 let name: Option<String> = row.get(1)?;
@@ -161,14 +161,44 @@ fn lookup_connection(connection: &Connection, title_id: &str) -> rusqlite::Resul
                         Box::new(error),
                     )
                 })?;
-                Ok(Member {
-                    name: name.unwrap_or_else(|| format!("Name unavailable ({id})")),
-                    id,
-                    characters: characters.join(", "),
-                    is_self: row.get::<_, String>(3)? == "self",
-                })
+                Ok((
+                    id.clone(),
+                    name.unwrap_or_else(|| format!("Name unavailable ({id})")),
+                    characters,
+                    row.get::<_, String>(3)? == "self",
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        // Keep the first billed position and merge roles by exact IMDb person ID.
+        let mut members: Vec<Member> = Vec::new();
+        let mut roles: Vec<Vec<String>> = Vec::new();
+        for (id, name, characters, is_self) in rows {
+            let index = members.iter().position(|existing| existing.id == id);
+            let index = match index {
+                Some(index) => {
+                    members[index].is_self |= is_self;
+                    index
+                }
+                None => {
+                    members.push(Member {
+                        id,
+                        name,
+                        characters: String::new(),
+                        is_self,
+                    });
+                    roles.push(Vec::new());
+                    members.len() - 1
+                }
+            };
+            for role in characters {
+                if !role.trim().is_empty() && !roles[index].contains(&role) {
+                    roles[index].push(role);
+                }
+            }
+        }
+        for (member, roles) in members.iter_mut().zip(roles) {
+            member.characters = roles.join(", ");
+        }
         Ok(Some(Cast {
             members,
             imported_at,
@@ -230,6 +260,21 @@ mod tests {
                 .contains("Updated role")
         );
     }
+    #[test]
+    fn repeated_performer_combines_unique_characters_in_billing_order() {
+        let mut db = database();
+        let input = format!(
+            "{}tt1375666\t5\tnm0000001\tactor\t\\N\t[\"Second role\",\"Third, Jr.\"]\ntt1375666\t6\tnm0000001\tself\t\\N\t[]\n",
+            data()
+        );
+        import(&mut db, Cursor::new(input), "test").unwrap();
+        let cast = lookup_connection(&db, "tt1375666").unwrap().unwrap();
+        assert_eq!(cast.members.len(), 3);
+        assert_eq!(cast.members[2].id, "nm0000001");
+        assert_eq!(cast.members[2].characters, "A & B, Second role, Third, Jr.");
+        assert!(cast.members[2].is_self);
+    }
+
     #[test]
     fn bad_rows_and_truncated_downloads_preserve_existing_cast() {
         let mut db = database();

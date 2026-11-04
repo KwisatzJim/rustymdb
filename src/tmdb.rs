@@ -58,6 +58,7 @@ impl Credentials {
 
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
 pub struct Supplement {
+    pub regional_releases: Vec<RegionalReleases>,
     pub collections: Vec<CollectionReference>,
     pub recommendations: Vec<RelatedTitle>,
     pub videos: Vec<Video>,
@@ -77,6 +78,115 @@ pub struct Supplement {
     pub budget: String,
     pub revenue: String,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionalReleases {
+    pub country: String,
+    pub entries: Vec<ReleaseEntry>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseEntry {
+    pub date: String,
+    pub kind: String,
+    pub certification: String,
+}
+fn release_date(value: &str) -> Option<String> {
+    let date = value.get(..10)?;
+    let bytes = date.as_bytes();
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+    {
+        return None;
+    }
+    let year: u32 = date[..4].parse().ok()?;
+    let month: u32 = date[5..7].parse().ok()?;
+    let day: u32 = date[8..].parse().ok()?;
+    let days = match month {
+        4 | 6 | 9 | 11 => 30,
+        2 if year.is_multiple_of(400) || (year.is_multiple_of(4) && !year.is_multiple_of(100)) => {
+            29
+        }
+        2 => 28,
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        _ => return None,
+    };
+    (year > 0 && (1..=days).contains(&day)).then(|| date.to_owned())
+}
+fn regional_releases(value: &Value, media: &str) -> Vec<RegionalReleases> {
+    let mut countries = std::collections::BTreeMap::<
+        String,
+        std::collections::BTreeSet<(String, String, String)>,
+    >::new();
+    let key = match media {
+        "movie" => "release_dates",
+        "tv" => "content_ratings",
+        _ => return vec![],
+    };
+    for region in value[key]["results"].as_array().into_iter().flatten() {
+        let country = text(region, "iso_3166_1");
+        if country.len() != 2 || !country.bytes().all(|b| b.is_ascii_uppercase()) {
+            continue;
+        }
+        if media == "tv" {
+            let certification = text(region, "rating");
+            if !certification.is_empty() {
+                countries.entry(country).or_default().insert((
+                    String::new(),
+                    "TV series rating".into(),
+                    certification,
+                ));
+            }
+            continue;
+        }
+        for item in region["release_dates"].as_array().into_iter().flatten() {
+            let kind = match item["type"].as_u64() {
+                Some(1) => "Premiere",
+                Some(2) => "Limited theatrical",
+                Some(3) => "Theatrical",
+                Some(4) => "Digital",
+                Some(5) => "Physical",
+                Some(6) => "TV",
+                _ => continue,
+            };
+            let raw_date = text(item, "release_date");
+            let date = if raw_date.is_empty() {
+                String::new()
+            } else {
+                let Some(date) = release_date(&raw_date) else {
+                    continue;
+                };
+                date
+            };
+            let certification = text(item, "certification");
+            if date.is_empty() && certification.is_empty() {
+                continue;
+            }
+            countries.entry(country.clone()).or_default().insert((
+                date,
+                kind.into(),
+                certification,
+            ));
+        }
+    }
+    countries
+        .into_iter()
+        .map(|(country, entries)| RegionalReleases {
+            country,
+            entries: entries
+                .into_iter()
+                .map(|(date, kind, certification)| ReleaseEntry {
+                    date,
+                    kind,
+                    certification,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CollectionReference {
     pub id: u64,
@@ -677,7 +787,11 @@ fn parse_details(value: &Value, imdb_id: &str, source_url: String) -> Result<Sup
         } else {
             vec![]
         };
+    let regional_releases = source_title_reference(&source_url)
+        .map(|(media, _)| regional_releases(value, media))
+        .unwrap_or_default();
     Ok(Supplement {
+        regional_releases,
         collections,
         recommendations,
         videos: trailers(&value["videos"]),
@@ -1096,10 +1210,14 @@ impl Service {
                     &[
                         (
                             "append_to_response",
-                            if candidate.path.split('/').count() == 2 {
-                                "external_ids,credits,videos,recommendations"
-                            } else {
-                                "external_ids,credits,videos"
+                            match candidate.path.split('/').collect::<Vec<_>>().as_slice() {
+                                ["movie", _] => {
+                                    "external_ids,credits,videos,recommendations,release_dates"
+                                }
+                                ["tv", _] => {
+                                    "external_ids,credits,videos,recommendations,content_ratings"
+                                }
+                                _ => "external_ids,credits,videos",
                             },
                         ),
                         ("language", "en-US"),
@@ -1180,6 +1298,115 @@ mod tests {
         });
         (format!("http://{address}/3/"), task)
     }
+    #[test]
+    fn regional_dates_keep_release_types_countries_and_missing_certifications() {
+        let value = serde_json::json!({"release_dates":{"results":[
+            {"iso_3166_1":"US","release_dates":[
+                {"type":3,"release_date":"2010-07-16T00:00:00.000Z","certification":"PG-13"},
+                {"type":3,"release_date":"2010-07-16T00:00:00.000Z","certification":"PG-13"},
+                {"type":4,"release_date":"2010-10-01T00:00:00Z","certification":""},
+                {"type":7,"release_date":"2010-10-01","certification":"X"},
+                {"type":3,"release_date":"2010-02-30","certification":"X"}]},
+            {"iso_3166_1":"GB","release_dates":[{"type":3,"release_date":"2010-07-16","certification":"12A"}]},
+            {"iso_3166_1":"bad","release_dates":[{"type":3,"certification":"X"}]}]}});
+        let regions = regional_releases(&value, "movie");
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].country, "GB");
+        assert_eq!(regions[1].entries.len(), 2);
+        assert_eq!(regions[1].entries[0].certification, "PG-13");
+        assert_eq!(regions[1].entries[1].kind, "Digital");
+        assert!(regions[1].entries[1].certification.is_empty());
+        for invalid in [
+            "2023-02-29",
+            "2024-13-01",
+            "2024-00-01",
+            "2024-01-00",
+            "0000-01-01",
+            "ééééé",
+            "garbage",
+        ] {
+            assert!(release_date(invalid).is_none());
+        }
+        assert_eq!(release_date("2024-02-29").as_deref(), Some("2024-02-29"));
+        let tv = serde_json::json!({"content_ratings":{"results":[{"iso_3166_1":"US","rating":"TV-14"},{"iso_3166_1":"US","rating":"TV-14"},{"iso_3166_1":"GB","rating":""}]}});
+        let regions = regional_releases(&tv, "tv");
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].entries.len(), 1);
+        assert_eq!(regions[0].entries[0].certification, "TV-14");
+        assert!(regions[0].entries[0].date.is_empty());
+        assert!(regional_releases(&tv, "episode").is_empty());
+        assert!(regional_releases(&Value::Null, "movie").is_empty());
+    }
+
+    #[tokio::test]
+    async fn regional_requests_are_media_specific_and_cached() {
+        for (kind, found, detail, expected) in [
+            (
+                "movie",
+                r#"{"movie_results":[{"id":42}]}"#,
+                r#"{"imdb_id":"tt1375666","release_dates":{"results":[{"iso_3166_1":"US","release_dates":[{"type":3,"release_date":"2010-07-16","certification":"PG-13"}]}]}}"#,
+                "release_dates",
+            ),
+            (
+                "tv",
+                r#"{"tv_results":[{"id":42}]}"#,
+                r#"{"external_ids":{"imdb_id":"tt1375666"},"content_ratings":{"results":[{"iso_3166_1":"US","rating":"TV-14"}]}}"#,
+                "content_ratings",
+            ),
+            (
+                "episode",
+                r#"{"tv_episode_results":[{"id":9,"show_id":42,"season_number":1,"episode_number":1}]}"#,
+                r#"{"external_ids":{"imdb_id":"tt1375666"}}"#,
+                "external_ids",
+            ),
+        ] {
+            let directory = Directory::new();
+            let (base, server) = mock(vec![
+                (200, r#"{"success":true}"#),
+                (200, found),
+                (200, detail),
+            ])
+            .await;
+            let service = Service::with_base(&directory.0, base).unwrap();
+            service
+                .save("", "test_read_access_token_12345")
+                .await
+                .unwrap();
+            // A cached supplement from the prior version must refresh for new fields.
+            let mut old = serde_json::to_value(Supplement::default()).unwrap();
+            old.as_object_mut().unwrap().remove("regional_releases");
+            Connection::open(&service.database)
+                .unwrap()
+                .execute(
+                    "INSERT INTO tmdb_cache VALUES ('tt1375666',?1,unixepoch()+86400)",
+                    [old.to_string()],
+                )
+                .unwrap();
+            let data = service
+                .supplement("tt1375666", Some(kind))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                data.regional_releases.len(),
+                if kind == "episode" { 0 } else { 1 }
+            );
+            let requests = server.await.unwrap();
+            assert!(requests[2].contains(expected));
+            if kind == "episode" {
+                assert!(!requests[2].contains("content_ratings"));
+                assert!(!requests[2].contains("release_dates"));
+            }
+            assert!(
+                service
+                    .supplement("tt1375666", Some(kind))
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+
     #[test]
     fn collections_sort_release_dates_and_reject_invalid_or_duplicate_parts() {
         let value = serde_json::json!({"id":42,"name":"Example Collection","parts":[

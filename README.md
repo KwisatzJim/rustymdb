@@ -148,3 +148,24 @@ libraries. See [third-party notices](THIRD_PARTY_NOTICES.md) and the generated
 
 This product uses the TMDB API but is not endorsed or certified by TMDB.
 The TMDB logo is used for attribution; RustyMDb is not affiliated with IMDb or TMDB.
+
+### Local IMDb person details
+
+Person pages show IMDb birth/death years, primary professions, and known-for titles
+without requiring TMDB credentials. Existing installations must refresh credits in
+Maintenance (or run `rustymdb import-credits`) once after upgrading to populate
+these fields. This uses the existing `name.basics` download; no additional dataset
+is needed. Unknown fields stay blank. Known-for titles link to local title pages;
+when a title is absent from the local catalog its IMDb ID is shown instead.
+IMDb information remains separately labeled from TMDB biographies and full dates.
+
+### Age ratings and regional releases
+
+With TMDB configured, title pages include a collapsible **Age ratings and release
+dates** section when data is available. Movies show country codes, certifications,
+and release dates by type (premiere, limited theatrical, theatrical, digital,
+physical, TV). TV series show country-specific content ratings; these are series
+ratings, not episode-specific certifications. Missing certifications are labeled
+“Not supplied.” Dates use YYYY-MM-DD. Existing positive TMDB title caches refresh
+on the next visit after this upgrade to fetch the additional fields. IMDb fields
+remain unchanged. No requests are made without saved TMDB credentials.

@@ -5,17 +5,32 @@
 <p class="eyebrow">PERSON · {{ id }}</p><h1>{{ name }}</h1>
 <p>{% if imdb_name %}Name from IMDb · {% endif %}<a href="https://www.imdb.com/name/{{ id }}/" rel="noreferrer">View on IMDb</a></p>
 {% if !notice.is_empty() %}<p class="notice">{{ notice }} <a href="/options">Options</a></p>{% endif %}
+{% if let Some(info) = imdb_person %}
+<details class="title-section"><summary><h2>IMDb person information</h2></summary>
+{% if info.details_imported %}
+<dl class="title-facts">
+{% if let Some(year) = info.birth_year %}<dt>Birth year</dt><dd>{{ year }}</dd>{% endif %}
+{% if let Some(year) = info.death_year %}<dt>Death year</dt><dd>{{ year }}</dd>{% endif %}
+{% if !info.professions.is_empty() %}<dt>Primary professions</dt><dd>{{ info.professions }}</dd>{% endif %}
+</dl>
+{% if !info.known_for.is_empty() %}<h3>Known for</h3><ul>{% for title in info.known_for %}<li><a href="/title/{{ title.id }}">{{ title.name }}</a></li>{% endfor %}</ul>{% endif %}
+<p class="cast-source">IMDb people dataset · Imported {{ info.imported_at }}. Missing fields are not supplied by IMDb.</p>
+{% else %}<p>Refresh the credits dataset in <a href="/maintenance">Maintenance</a> to add birth/death years, professions, and known-for titles from IMDb.</p>{% endif %}
+</details>
+{% endif %}
 {% if let Some(person) = person %}
+<details class="title-section"><summary><h2>Additional person information from TMDB</h2></summary>
 <dl class="title-facts">
 {% if !person.department.is_empty() %}<dt>Known for</dt><dd>{{ person.department }}</dd>{% endif %}
 {% if !person.birthday.is_empty() %}<dt>Born</dt><dd>{{ person.birthday }}</dd>{% endif %}
 {% if !person.deathday.is_empty() %}<dt>Died</dt><dd>{{ person.deathday }}</dd>{% endif %}
 {% if !person.birthplace.is_empty() %}<dt>Place of birth</dt><dd>{{ person.birthplace }}</dd>{% endif %}
 </dl>
-<section><h2>Biography</h2>{% if person.biography.is_empty() %}<p>No biography is available from TMDB.</p>{% else %}<p class="person-biography">{{ person.biography }}</p>{% endif %}</section>
-<section><h2>Filmography</h2><p>Movie and TV credits from TMDB, newest dated titles first. Multiple roles for a title are combined. Title links open RustyMDb when TMDB supplies an IMDb ID. Principal credits and episode coverage may differ from IMDb.</p>
+</details>
+<details class="title-section"><summary><h2>Biography</h2></summary>{% if person.biography.is_empty() %}<p>No biography is available from TMDB.</p>{% else %}<p class="person-biography">{{ person.biography }}</p>{% endif %}</details>
+<details class="title-section"><summary><h2>Filmography</h2></summary><p>Movie and TV credits from TMDB, newest dated titles first. Multiple roles for a title are combined. Title links open RustyMDb when TMDB supplies an IMDb ID. Principal credits and episode coverage may differ from IMDb.</p>
 {% if person.filmography.is_empty() %}<p>No filmography is available from TMDB.</p>{% else %}
-<ul class="person-credits">{% for credit in person.filmography %}<li><a href="{{ credit.local_url() }}">{{ credit.title }}</a> <span>{{ credit.media }}{% if !credit.date.is_empty() %} · {{ credit.date }}{% endif %}</span>{% if !credit.roles.is_empty() %}<p>{{ credit.roles }}</p>{% endif %}</li>{% endfor %}</ul>{% endif %}</section>
+<ul class="person-credits">{% for credit in person.filmography %}<li><a href="{{ credit.local_url() }}">{{ credit.title }}</a> <span>{{ credit.media }}{% if !credit.date.is_empty() %} · {{ credit.date }}{% endif %}</span>{% if !credit.roles.is_empty() %}<p>{{ credit.roles }}</p>{% endif %}</li>{% endfor %}</ul>{% endif %}</details>
 <p><a href="{{ person.source_url }}" rel="noreferrer">Person information on TMDB</a></p>{% include "tmdb-attribution.html" %}
 {% endif %}
 </main><footer>RustyMDb · Independent project, not affiliated with IMDb.</footer></body></html>

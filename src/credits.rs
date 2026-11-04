@@ -20,6 +20,10 @@ pub fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS imdb_people (
         person_id TEXT PRIMARY KEY, primary_name TEXT
+        ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS imdb_person_details (
+        person_id TEXT PRIMARY KEY, birth_year INTEGER, death_year INTEGER,
+        professions TEXT NOT NULL, known_for TEXT NOT NULL
         ) WITHOUT ROWID;",
     )?;
     crate::people::initialize(connection)
@@ -67,6 +71,86 @@ fn ids(value: &str) -> Result<&str, Error> {
         return Err("Invalid IMDb person ID list".into());
     }
     Ok(value)
+}
+
+fn person_year(value: &str) -> Result<Option<i64>, Error> {
+    if value == "\\N" {
+        return Ok(None);
+    }
+    if value.len() != 4 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("Invalid IMDb person year; previous credits preserved".into());
+    }
+    Ok(Some(value.parse()?))
+}
+
+#[derive(Debug)]
+pub struct PersonInfo {
+    pub name: Option<String>,
+    pub birth_year: Option<i64>,
+    pub death_year: Option<i64>,
+    pub professions: String,
+    pub known_for: Vec<PersonLink>,
+    pub details_imported: bool,
+    pub imported_at: String,
+}
+
+pub fn person_info(path: &Path, id: &str) -> rusqlite::Result<Option<PersonInfo>> {
+    person_info_connection(&Connection::open(path)?, id)
+}
+
+fn person_info_connection(c: &Connection, id: &str) -> rusqlite::Result<Option<PersonInfo>> {
+    c.execute_batch("BEGIN")?;
+    let result = (|| {
+        let row = c
+            .query_row(
+                "SELECT p.primary_name,d.birth_year,d.death_year,
+            COALESCE(d.professions,''),COALESCE(d.known_for,''),d.person_id IS NOT NULL,
+            COALESCE((SELECT imported_at FROM dataset_imports WHERE name='people'),'')
+            FROM imdb_people p LEFT JOIN imdb_person_details d ON d.person_id=p.person_id
+            WHERE p.person_id=?1",
+                [id],
+                |row| {
+                    Ok((
+                        PersonInfo {
+                            name: row.get(0)?,
+                            birth_year: row.get(1)?,
+                            death_year: row.get(2)?,
+                            professions: row
+                                .get::<_, String>(3)?
+                                .replace('_', " ")
+                                .replace(',', ", "),
+                            known_for: Vec::new(),
+                            details_imported: row.get(5)?,
+                            imported_at: row.get(6)?,
+                        },
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((mut info, known_for)) = row else {
+            return Ok(None);
+        };
+        for title_id in known_for
+            .split(',')
+            .filter(|id| crate::imdb::valid_title_id(id))
+        {
+            let name = c
+                .query_row(
+                    "SELECT primary_title FROM imdb_titles WHERE title_id=?1",
+                    [title_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            info.known_for.push(PersonLink {
+                id: title_id.into(),
+                name: name.unwrap_or_else(|| format!("IMDb title {title_id}")),
+            });
+        }
+        Ok(Some(info))
+    })();
+    c.execute_batch("ROLLBACK")?;
+    result
 }
 
 fn read_header(reader: &mut impl BufRead, expected: &str) -> Result<(), Error> {
@@ -137,9 +221,12 @@ fn refresh<C: BufRead, P: BufRead>(
         "nconst\tprimaryName\tbirthYear\tdeathYear\tprimaryProfession\tknownForTitles",
     )?;
     transaction.execute("DELETE FROM imdb_people", [])?;
+    transaction.execute("DELETE FROM imdb_person_details", [])?;
     let mut people_count = 0;
     {
         let mut insert = transaction.prepare("INSERT INTO imdb_people VALUES (?1, ?2)")?;
+        let mut details =
+            transaction.prepare("INSERT INTO imdb_person_details VALUES (?1, ?2, ?3, ?4, ?5)")?;
         loop {
             line.clear();
             if people.reader.read_line(&mut line)? == 0 {
@@ -150,7 +237,25 @@ fn refresh<C: BufRead, P: BufRead>(
                 return Err(format!("Invalid people row {}", people_count + 2).into());
             }
             let name = (fields[1] != "\\N").then_some(fields[1]);
+            let birth_year = person_year(fields[2])?;
+            let death_year = person_year(fields[3])?;
+            let professions = if fields[4] == "\\N" { "" } else { fields[4] };
+            let known_for = if fields[5] == "\\N" { "" } else { fields[5] };
+            if !known_for.is_empty() && !known_for.split(',').all(crate::imdb::valid_title_id) {
+                return Err(format!(
+                    "Invalid known-for titles in people row {}",
+                    people_count + 2
+                )
+                .into());
+            }
             insert.execute(rusqlite::params![fields[0], name])?;
+            details.execute(rusqlite::params![
+                fields[0],
+                birth_year,
+                death_year,
+                professions,
+                known_for
+            ])?;
             people_count += 1;
             if people_count % 1_000_000 == 0 {
                 println!("Read {people_count} people rows (not yet committed)…");
@@ -299,6 +404,59 @@ mod tests {
                 .get::<_, i64>(0))
                 .unwrap(),
             2
+        );
+    }
+
+    #[test]
+    fn person_details_refresh_preserves_nulls_title_order_and_rolls_back_bad_rows() {
+        let mut db = database();
+        db.execute_batch(
+            "CREATE TABLE imdb_titles(title_id TEXT PRIMARY KEY,primary_title TEXT);
+            INSERT INTO imdb_titles VALUES ('tt1375666','A local title');
+            INSERT INTO imdb_people VALUES ('nm0000001','Old name');",
+        )
+        .unwrap();
+        let old = person_info_connection(&db, "nm0000001").unwrap().unwrap();
+        assert!(!old.details_imported);
+        assert!(old.birth_year.is_none());
+        let detailed = PEOPLE.replace(
+            "René Writer\t\\N\t\\N\twriter\t\\N",
+            "René Writer\t1940\t2020\twriter,art_director\ttt1375666,tt9999999",
+        );
+        refresh(&mut db, dataset(CREW), || Ok(dataset(&detailed))).unwrap();
+        let info = person_info_connection(&db, "nm0000001").unwrap().unwrap();
+        assert!(info.details_imported);
+        assert_eq!(info.birth_year, Some(1940));
+        assert_eq!(info.death_year, Some(2020));
+        assert_eq!(info.professions, "writer, art director");
+        assert_eq!(info.known_for[0].name, "A local title");
+        assert_eq!(info.known_for[1].id, "tt9999999");
+        assert_eq!(info.known_for[1].name, "IMDb title tt9999999");
+        let missing = person_info_connection(&db, "nm0000002").unwrap().unwrap();
+        assert!(missing.birth_year.is_none());
+        assert!(missing.death_year.is_none());
+        assert!(missing.known_for.is_empty());
+        assert!(person_info_connection(&db, "nm9999999").unwrap().is_none());
+        for broken in [
+            detailed.replace("1940", "bad"),
+            detailed.replace("tt9999999", "not-an-id"),
+        ] {
+            assert!(refresh(&mut db, dataset(CREW), || Ok(dataset(&broken))).is_err());
+            assert_eq!(
+                person_info_connection(&db, "nm0000001")
+                    .unwrap()
+                    .unwrap()
+                    .birth_year,
+                Some(1940)
+            );
+        }
+        refresh(&mut db, dataset(CREW), || Ok(dataset(PEOPLE))).unwrap();
+        assert!(
+            person_info_connection(&db, "nm0000001")
+                .unwrap()
+                .unwrap()
+                .birth_year
+                .is_none()
         );
     }
 

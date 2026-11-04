@@ -42,6 +42,7 @@ struct PersonPage {
     id: String,
     name: String,
     imdb_name: bool,
+    imdb_person: Option<credits::PersonInfo>,
     person: Option<tmdb::Person>,
     notice: String,
 }
@@ -49,25 +50,16 @@ async fn person_page(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Html<String>, StatusCode> {
-    use rusqlite::OptionalExtension;
     if !credits::person_id(&id) {
         return Err(StatusCode::NOT_FOUND);
     }
     let path = state.database.clone();
     let key = id.clone();
-    let name = tokio::task::spawn_blocking(move || -> rusqlite::Result<Option<String>> {
-        rusqlite::Connection::open(path)?
-            .query_row(
-                "SELECT primary_name FROM imdb_people WHERE person_id=?1",
-                [key],
-                |r| r.get::<_, Option<String>>(0),
-            )
-            .optional()
-            .map(Option::flatten)
-    })
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let imdb_person = tokio::task::spawn_blocking(move || credits::person_info(&path, &key))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let name = imdb_person.as_ref().and_then(|info| info.name.clone());
     let (person, notice) = match state.tmdb.person(&id).await {
         Ok(Some(person)) => (Some(person), String::new()),
         Ok(None) => (
@@ -90,6 +82,7 @@ async fn person_page(
         id,
         name,
         imdb_name,
+        imdb_person,
         person,
         notice,
     }

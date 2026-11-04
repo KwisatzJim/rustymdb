@@ -134,3 +134,16 @@ footer { padding-bottom: 6rem; }
 .recommendation-list li { border: 1px solid #354039; border-radius: 8px; padding: 16px; overflow-wrap: anywhere; }
 .recommendation-list a { font-weight: 600; }
 .recommendation-list p { font-size: .85rem; margin: 6px 0 0; }
+
+.title-section { clear: both; border-top: 1px solid #354039; margin: 24px 0; }
+.title-section > summary { cursor: pointer; color: #e7b66e; padding: 16px 4px; }
+.title-section > summary h2 { display: inline; font-size: 1.3rem; margin: 0; }
+.title-section > summary:focus-visible { outline: 2px solid #e7b66e; outline-offset: 3px; }
+.principal-cast { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; }
+.principal-cast li { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
+.principal-cast img { width: 60px; height: 90px; flex-shrink: 0; object-fit: cover; border-radius: 6px; background: #1c2420; }
+.principal-cast li div { min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .principal-cast { grid-template-columns: 1fr; } }
+
+.regional-releases { list-style: none; padding: 0; }
+.regional-releases li { padding: 10px 0; border-bottom: 1px solid #354039; }

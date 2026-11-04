@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Collapsible title and person sections.
+- Responsive principal cast with profile photos and combined character credits.
+- Local IMDb person birth/death years, professions and known-for titles after a credits refresh.
+- Country-specific movie certifications and release dates, plus TV series content ratings from TMDB.
+
 ## 0.1.0 — Initial public source release
 
 - IMDb-first local title and People search, ratings, credits and TV episodes.
