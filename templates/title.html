@@ -29,6 +29,7 @@
     {% else %}<p role="status">Watchlist temporarily unavailable.</p>{% endif %}
     {% if let Some(parent) = episode_navigation.parent %}
     <p class="episode-parent"><a href="{{ parent.url }}">← {{ parent.title }}</a><br>{{ parent.position }}</p>
+    {% include "episode_navigation.html" %}
     {% endif %}
     {% if !notice.is_empty() %}<p class="notice" role="status">{{ notice }}</p>{% endif %}
     {% if !details.plot.is_empty() %}<details class="title-section"><summary><h2>Storyline</h2></summary><p>{{ details.plot }}</p></details>{% endif %}
@@ -175,6 +176,7 @@
     <ul class="recommendation-list">{% for related in extra.recommendations %}<li><a href="{{ related.local_url() }}">{{ related.title }}</a><p>{{ related.type_label() }}{% if !related.year.is_empty() %} · {{ related.year }}{% endif %}</p></li>{% endfor %}</ul>
     {% include "tmdb-attribution.html" %}</details>{% endif %}{% endif %}
     <a class="source-link" href="https://www.imdb.com/title/{{ id }}/" rel="noreferrer">View source on IMDb ↗</a>
+    {% if let Some(parent) = episode_navigation.parent %}{% include "episode_navigation.html" %}{% endif %}
   </main>
   <footer>Information courtesy of <a href="https://www.imdb.com/" rel="noreferrer">IMDb</a>. Used with permission.<br>RustyMDb · Independent project, not affiliated with IMDb.</footer>
 </body>

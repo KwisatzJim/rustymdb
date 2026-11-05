@@ -1,0 +1,6 @@
+{% if parent.previous_id.is_some() || parent.next_id.is_some() %}
+<nav class="pagination" aria-label="Episode navigation">
+  {% if let Some(previous) = parent.previous_id %}<a href="/title/{{ previous }}" rel="prev">← Previous Episode</a>{% else %}<span class="page-disabled" aria-disabled="true">← Previous Episode</span>{% endif %}
+  {% if let Some(next) = parent.next_id %}<a href="/title/{{ next }}" rel="next">Next Episode →</a>{% else %}<span class="page-disabled" aria-disabled="true">Next Episode →</span>{% endif %}
+</nav>
+{% endif %}

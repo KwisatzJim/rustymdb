@@ -132,11 +132,16 @@ fn series_url(id: &str, season: &str, page: u32) -> String {
     format!("/title/{id}?season={season}&page={page}#episodes")
 }
 
+const EPISODE_ORDER: &str =
+    "e.season_number IS NULL,e.season_number,e.episode_number IS NULL,e.episode_number,e.title_id";
+
 #[derive(Debug)]
 pub struct Parent {
     pub title: String,
     pub url: String,
     pub position: String,
+    pub previous_id: Option<String>,
+    pub next_id: Option<String>,
 }
 #[derive(Debug)]
 pub struct Season {
@@ -188,11 +193,37 @@ fn lookup_connection(
         let Some(imported_at) = imported else {
             return Ok(Navigation::default());
         };
-        let parent = connection.query_row("SELECT e.parent_id,COALESCE(t.primary_title,e.parent_id),e.season_number,e.episode_number
-            FROM imdb_episodes e LEFT JOIN imdb_titles t ON t.title_id=e.parent_id WHERE e.title_id=?1",[id],|r| {
-            let id:String=r.get(0)?;let title=r.get(1)?;let season:Option<i64>=r.get(2)?;let episode=r.get(3)?;
-            Ok(Parent{title,url:series_url(&id,&season.map(|v|v.to_string()).unwrap_or_else(||"unknown".into()),1),position:position(season,episode)})
-        }).optional()?;
+        let parent = connection
+            .query_row(
+                &format!(
+                    "WITH ordered AS (
+                SELECT e.*, LAG(e.title_id) OVER episode_order AS previous_id,
+                       LEAD(e.title_id) OVER episode_order AS next_id
+                FROM imdb_episodes e
+                WHERE e.parent_id = (SELECT parent_id FROM imdb_episodes WHERE title_id=?1)
+                WINDOW episode_order AS (ORDER BY {EPISODE_ORDER})
+            )
+            SELECT e.parent_id, COALESCE(t.primary_title,e.parent_id),
+                   e.season_number, e.episode_number, e.previous_id, e.next_id
+            FROM ordered e LEFT JOIN imdb_titles t ON t.title_id=e.parent_id
+            WHERE e.title_id=?1"
+                ),
+                [id],
+                |row| {
+                    let parent_id: String = row.get(0)?;
+                    let season: Option<i64> = row.get(2)?;
+                    let episode = row.get(3)?;
+                    let season_value = season.map_or_else(|| "unknown".into(), |n| n.to_string());
+                    Ok(Parent {
+                        title: row.get(1)?,
+                        url: series_url(&parent_id, &season_value, 1),
+                        position: position(season, episode),
+                        previous_id: row.get(4)?,
+                        next_id: row.get(5)?,
+                    })
+                },
+            )
+            .optional()?;
         let mut statement=connection.prepare("SELECT DISTINCT season_number FROM imdb_episodes WHERE parent_id=?1 ORDER BY season_number IS NULL,season_number")?;
         let values = statement
             .query_map([id], |r| r.get::<_, Option<i64>>(0))?
@@ -229,10 +260,10 @@ fn lookup_connection(
                 selected: true,
             });
         }
-        let mut statement=connection.prepare("SELECT e.title_id,COALESCE(t.primary_title,e.title_id),e.season_number,e.episode_number,r.rating
+        let mut statement=connection.prepare(&format!("SELECT e.title_id,COALESCE(t.primary_title,e.title_id),e.season_number,e.episode_number,r.rating
             FROM imdb_episodes e LEFT JOIN imdb_titles t ON t.title_id=e.title_id LEFT JOIN imdb_ratings r ON r.title_id=e.title_id
             WHERE e.parent_id=?1 AND (?2='all' OR (?2='unknown' AND e.season_number IS NULL) OR e.season_number=?3)
-            ORDER BY e.season_number IS NULL,e.season_number,e.episode_number IS NULL,e.episode_number,e.title_id LIMIT 51 OFFSET ?4")?;
+            ORDER BY {EPISODE_ORDER} LIMIT 51 OFFSET ?4"))?;
         let mut episodes = statement
             .query_map(
                 rusqlite::params![
@@ -350,6 +381,39 @@ mod tests {
         assert_eq!(season_value("0002").unwrap(), "2");
         assert!(season_value("-1").is_err());
     }
+    #[test]
+    fn episode_neighbors_follow_series_order_across_seasons_and_stop_at_ends() {
+        let mut db = database();
+        let fixture = format!(
+            "{}tt0000005\ttt0000001\t2\t1\ntt0000006\ttt0000007\t1\t1\n",
+            data()
+        );
+        import(&mut db, Cursor::new(fixture), "first").unwrap();
+        let series = lookup_connection(&db, "tt0000001", "all", 1)
+            .unwrap()
+            .series
+            .unwrap();
+        assert_eq!(series.episodes.len(), 4);
+        for (index, episode) in series.episodes.iter().enumerate() {
+            let parent = lookup_connection(&db, &episode.id, "all", 1)
+                .unwrap()
+                .parent
+                .unwrap();
+            let previous = index.checked_sub(1).map(|i| series.episodes[i].id.as_str());
+            let next = series
+                .episodes
+                .get(index + 1)
+                .map(|entry| entry.id.as_str());
+            assert_eq!(parent.previous_id.as_deref(), previous);
+            assert_eq!(parent.next_id.as_deref(), next);
+        }
+        let single = lookup_connection(&db, "tt0000006", "all", 1)
+            .unwrap()
+            .parent
+            .unwrap();
+        assert!(single.previous_id.is_none() && single.next_id.is_none());
+    }
+
     #[test]
     fn invalid_and_truncated_refreshes_preserve_episode_relationships() {
         let mut db = database();
