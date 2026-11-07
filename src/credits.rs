@@ -77,7 +77,7 @@ fn person_year(value: &str) -> Result<Option<i64>, Error> {
     if value == "\\N" {
         return Ok(None);
     }
-    if value.len() != 4 || !value.bytes().all(|b| b.is_ascii_digit()) {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Invalid IMDb person year; previous credits preserved".into());
     }
     Ok(Some(value.parse()?))
@@ -458,6 +458,24 @@ mod tests {
                 .birth_year
                 .is_none()
         );
+    }
+
+    #[test]
+    fn people_import_accepts_short_historical_years_and_populates_details() {
+        let mut db = database();
+        let historic = PEOPLE.replace("René Writer\t\\N\t\\N", "René Writer\t525\t456");
+        refresh(&mut db, dataset(CREW), || Ok(dataset(&historic))).unwrap();
+        let years: (i64, i64) = db
+            .query_row(
+                "SELECT birth_year,death_year FROM imdb_person_details WHERE person_id='nm0000001'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(years, (525, 456));
+        assert!(person_year(r"\N").unwrap().is_none());
+        assert!(person_year("").is_err());
+        assert!(person_year("unknown").is_err());
     }
 
     #[test]
