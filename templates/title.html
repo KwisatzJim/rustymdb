@@ -175,7 +175,7 @@
     <p>Recommendations supplied by TMDB. Select a title to open its RustyMDb page when an IMDb match is available.</p>
     <ul class="recommendation-list">{% for related in extra.recommendations %}<li><a href="{{ related.local_url() }}">{{ related.title }}</a><p>{{ related.type_label() }}{% if !related.year.is_empty() %} · {{ related.year }}{% endif %}</p></li>{% endfor %}</ul>
     {% include "tmdb-attribution.html" %}</details>{% endif %}{% endif %}
-    <a class="source-link" href="https://www.imdb.com/title/{{ id }}/" rel="noreferrer">View source on IMDb ↗</a>
+    <a class="source-link" href="https://www.imdb.com/title/{{ id }}/" target="_blank" rel="noopener noreferrer">View source on IMDb ↗</a>
     {% if let Some(parent) = episode_navigation.parent %}{% include "episode_navigation.html" %}{% endif %}
   </main>
   <footer>Information courtesy of <a href="https://www.imdb.com/" rel="noreferrer">IMDb</a>. Used with permission.<br>RustyMDb · Independent project, not affiliated with IMDb.</footer>

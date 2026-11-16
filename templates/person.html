@@ -3,7 +3,7 @@
 <body>{% let active_tab = "browse" %}{% include "navigation.html" %}<main>
 <figure class="person-photo"><img src="/person-photo/{{ id }}" alt="Profile photo of {{ name }}" width="185" height="278" decoding="async"><figcaption>Profile photos: TMDB</figcaption></figure>
 <p class="eyebrow">PERSON · {{ id }}</p><h1>{{ name }}</h1>
-<p>{% if imdb_name %}Name from IMDb · {% endif %}<a href="https://www.imdb.com/name/{{ id }}/" rel="noreferrer">View on IMDb</a></p>
+{% if imdb_name %}<p>Name from IMDb</p>{% endif %}
 {% if !notice.is_empty() %}<p class="notice">{{ notice }} <a href="/options">Options</a></p>{% endif %}
 {% if let Some(info) = imdb_person %}
 <details class="title-section"><summary><h2>IMDb person information</h2></summary>
@@ -33,4 +33,5 @@
 <ul class="person-credits">{% for credit in person.filmography %}<li><a href="{{ credit.local_url() }}">{{ credit.title }}</a> <span>{{ credit.media }}{% if !credit.date.is_empty() %} · {{ credit.date }}{% endif %}</span>{% if !credit.roles.is_empty() %}<p>{{ credit.roles }}</p>{% endif %}</li>{% endfor %}</ul>{% endif %}</details>
 <p><a href="{{ person.source_url }}" rel="noreferrer">Person information on TMDB</a></p>{% include "tmdb-attribution.html" %}
 {% endif %}
+<a class="source-link" href="https://www.imdb.com/name/{{ id }}/" target="_blank" rel="noopener noreferrer">View source on IMDb ↗</a>
 </main><footer>RustyMDb · Independent project, not affiliated with IMDb.</footer></body></html>
