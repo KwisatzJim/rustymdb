@@ -96,6 +96,7 @@ its source. Trailers are external links, with no embedded player or autoplay.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `RUSTYMDB_BIND` | `127.0.0.1:3000` | Listening address and port |
+| `RUSTYMDB_ALLOWED_HOSTS` | Local addresses and concrete bind IP | Additional comma-separated HTTP authorities, including ports when used |
 | `RUSTYMDB_DATA_DIR` | `data` | Persistent data directory |
 | `RUSTYMDB_IMAGE_CACHE_MB` | `512` | Maximum cached artwork payload in MiB (1–16384) |
 
@@ -121,6 +122,17 @@ For private-network access, bind to an appropriate interface or `0.0.0.0:3000`
 and apply your host/network access controls. Keep other applications' ports and
 HTTPS routes separate: a Tailscale Serve rule on `/` port 443 can take over an
 existing service at the same hostname.
+
+Requests must use an approved hostname and port. Localhost, loopback IPs and a
+concrete bind IP are allowed automatically at the actual listening port. For a
+wildcard bind (`0.0.0.0` or `[::]`), explicitly add the LAN IPs/names clients use.
+For example, `RUSTYMDB_ALLOWED_HOSTS=192.168.1.20:3000,movies.home.arpa` permits
+that LAN address and an HTTPS proxy using `movies.home.arpa` without a port.
+Use authorities only, without `http://`, paths or wildcards. Ports are exact:
+`movies.home.arpa` and `movies.home.arpa:8443` are separate entries.
+A reverse proxy must preserve an approved `Host` or set it to an approved backend
+authority. Forwarded-host headers do not grant access. This check prevents DNS
+rebinding; it does not replace network access controls or authentication.
 
 See [Linux service setup](docs/linux-deployment.md) and
 [backup, retention and restore](docs/backup-and-restore.md).

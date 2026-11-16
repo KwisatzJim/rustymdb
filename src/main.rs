@@ -1,3 +1,4 @@
+mod authority;
 mod backup;
 mod cast;
 mod catalog;
@@ -1405,6 +1406,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let maintenance = maintenance::Manager::open(data_dir.clone(), env::current_exe()?)?;
     let tmdb = tmdb::Service::open(&data_dir)?;
     let scheduler = maintenance.clone();
+    let listener = tokio::net::TcpListener::bind(&address).await?;
+    let additional_hosts = match env::var("RUSTYMDB_ALLOWED_HOSTS") {
+        Ok(value) => Some(value),
+        Err(env::VarError::NotPresent) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let allowed_hosts =
+        authority::AllowedHosts::new(listener.local_addr()?, additional_hosts.as_deref())?;
     let app = Router::new()
         .route("/", get(home))
         .route(
@@ -1448,8 +1457,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             form_token,
             maintenance,
             tmdb,
-        });
-    let listener = tokio::net::TcpListener::bind(&address).await?;
+        })
+        .layer(axum::middleware::from_fn_with_state(
+            allowed_hosts,
+            authority::enforce,
+        ));
     tokio::spawn(scheduler.run_scheduler());
     // The first tick cleans existing caches; later ticks remove expired artwork even when idle.
     tokio::spawn(async move {

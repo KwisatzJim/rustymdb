@@ -6,6 +6,7 @@ from pathlib import Path
 import queue
 import re
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -31,6 +32,24 @@ with tempfile.TemporaryDirectory(prefix='rustymdb-smoke-') as directory:
         def get(path):
             with urllib.request.urlopen(base + path, timeout=10) as response:
                 return response.read().decode()
+        # Exercise the real application ingress before any form or state access.
+        for path in ['/', '/options', '/watchlist', '/maintenance', '/static/style.css']:
+            request = urllib.request.Request(base + path, headers={'Host': 'attacker.example:3000'})
+            try:
+                urllib.request.urlopen(request, timeout=10)
+                raise AssertionError('Unapproved Host reached the application')
+            except urllib.error.HTTPError as error:
+                assert error.code == 403
+                assert b'name="token"' not in error.read()
+        port = int(match.group(1))
+        for headers in ['', f'Host: 127.0.0.1:{port}\r\nHost: attacker.example\r\n']:
+            with socket.create_connection(('127.0.0.1', port), timeout=10) as connection:
+                connection.sendall(('GET /options HTTP/1.1\r\n' + headers + 'Connection: close\r\n\r\n').encode())
+                response = b''
+                while chunk := connection.recv(65536):
+                    response += chunk
+            assert response.split(b' ', 2)[1] in [b'400', b'403']
+            assert b'name="token"' not in response
         assert 'People' in get('/')
         assert 'Status: Not configured' in get('/options')
         assert 'Save backup retention' in get('/options')
