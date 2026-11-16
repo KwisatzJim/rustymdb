@@ -1442,6 +1442,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/watchlist/{id}", post(watchlist_update))
         .route("/watchlist/{id}/details", post(watchlist_details_update))
         .route("/static/style.css", get(stylesheet))
+        .route("/favicon.svg", get(favicon))
+        .route("/favicon.png", get(favicon_png))
+        .route("/favicon.ico", get(favicon_ico))
+        .route("/apple-touch-icon.png", get(apple_touch_icon))
+        .route("/apple-touch-icon-precomposed.png", get(apple_touch_icon))
         .route("/static/back-to-top.js", get(back_to_top_script))
         .with_state(AppState {
             client: reqwest::Client::builder()
@@ -1677,6 +1682,46 @@ async fn back_to_top_script() -> ([(&'static str, &'static str); 1], &'static st
     (
         [("content-type", "text/javascript; charset=utf-8")],
         include_str!("../static/back-to-top.js"),
+    )
+}
+
+async fn favicon() -> ([(&'static str, &'static str); 2], &'static str) {
+    (
+        [
+            ("content-type", "image/svg+xml"),
+            ("cache-control", "public, max-age=86400"),
+        ],
+        include_str!("../static/favicon.svg"),
+    )
+}
+
+async fn favicon_png() -> ([(&'static str, &'static str); 2], &'static [u8]) {
+    (
+        [
+            ("content-type", "image/png"),
+            ("cache-control", "public, max-age=86400"),
+        ],
+        include_bytes!("../static/favicon.png"),
+    )
+}
+
+async fn favicon_ico() -> ([(&'static str, &'static str); 2], &'static [u8]) {
+    (
+        [
+            ("content-type", "image/vnd.microsoft.icon"),
+            ("cache-control", "public, max-age=86400"),
+        ],
+        include_bytes!("../static/favicon.ico"),
+    )
+}
+
+async fn apple_touch_icon() -> ([(&'static str, &'static str); 2], &'static [u8]) {
+    (
+        [
+            ("content-type", "image/png"),
+            ("cache-control", "public, max-age=86400"),
+        ],
+        include_bytes!("../static/apple-touch-icon.png"),
     )
 }
 

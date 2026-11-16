@@ -1,4 +1,7 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{% if let Some(collection) = collection %}{{ collection.name }}{% else %}Movie collection{% endif %} — RustyMDb</title><link rel="stylesheet" href="/static/style.css"></head>
+<!doctype html><html lang="en"><head>
+  <link rel="icon" href="/favicon.ico?v=2" sizes="16x16 32x32 64x64">
+  <link rel="icon" href="/favicon.png?v=2" type="image/png" sizes="64x64">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=3" sizes="180x180"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{% if let Some(collection) = collection %}{{ collection.name }}{% else %}Movie collection{% endif %} — RustyMDb</title><link rel="stylesheet" href="/static/style.css"></head>
 <body>{% let active_tab = "browse" %}{% include "navigation.html" %}<main>
 {% if let Some(collection) = collection %}<h1 class="title-heading">{{ collection.name }}</h1>
 {% if !collection.overview.is_empty() %}<p class="intro">{{ collection.overview }}</p>{% endif %}
